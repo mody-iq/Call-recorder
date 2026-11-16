@@ -8,9 +8,8 @@ BUNDLE_NAME = CallRecorderPrefs
 
 CallRecorderPrefs_FILES = CRPRootListController.m
 CallRecorderPrefs_FRAMEWORKS = UIKit Foundation AVFoundation
-CallRecorderPrefs_PRIVATE_FRAMEWORKS = Preferences
 CallRecorderPrefs_LIBRARIES = roothide
 CallRecorderPrefs_INSTALL_PATH = /Library/PreferenceBundles
-CallRecorderPrefs_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+CallRecorderPrefs_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-error
 
 include $(THEOS_MAKE_PATH)/bundle.mk
