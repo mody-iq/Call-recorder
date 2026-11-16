@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - "**"
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -20,22 +23,28 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install ldid dpkg make
+          brew install ldid dpkg make xz
+          if [ -d "/opt/homebrew/opt/make/libexec/gnubin" ]; then
+            echo "/opt/homebrew/opt/make/libexec/gnubin" >> $GITHUB_PATH
+          elif [ -d "/usr/local/opt/make/libexec/gnubin" ]; then
+            echo "/usr/local/opt/make/libexec/gnubin" >> $GITHUB_PATH
+          fi
 
       - name: Clone RootHide Theos
         run: |
-          git clone --recursive https://github.com/roothide/theos.git $THEOS
+          git clone --recursive https://github.com/roothide/theos.git "$THEOS"
 
       - name: Download and install patched iOS SDKs
         run: |
-          mkdir -p $THEOS/sdks
+          mkdir -p "$THEOS/sdks"
           git clone --depth 1 https://github.com/theos/sdks.git /tmp/theos-sdks
-          cp -R /tmp/theos-sdks/*.sdk $THEOS/sdks/
+          cp -R /tmp/theos-sdks/*.sdk "$THEOS/sdks/"
           rm -rf /tmp/theos-sdks
 
       - name: Build RootHide .deb package
         run: |
-          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide messages=yes
+          ls -lh packages/
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
