@@ -22,9 +22,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable NSString *)resolveWritableRecordingsDirectory;
 + (void)consolidateRecordingsToPrimaryDirectory;
 + (void)appendDiagnosticLog:(NSString *)message;
++ (uint32_t)wavDataPayloadSizeAtPath:(NSString *)path;
++ (BOOL)isValidRecordingAtPath:(NSString *)path;
 
 - (void)startRecording;
 - (void)stopRecording;
+- (void)startRecordingWithMetadata:(nullable NSDictionary *)metadata;
 - (void)appendAudioBufferList:(AudioBufferList *)ioData
                        frames:(UInt32)inNumberFrames
                        format:(AudioStreamBasicDescription)asbd;
