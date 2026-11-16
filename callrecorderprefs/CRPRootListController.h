@@ -1,8 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
-#import <Preferences/PSListController.h>
-#import <Preferences/PSSpecifier.h>
+#import <Preferences/PSViewController.h>
 
-@interface CRPRootListController : PSListController <AVAudioPlayerDelegate>
+@interface CRPRootListController : PSViewController <UITableViewDelegate, UITableViewDataSource, AVAudioPlayerDelegate>
 @end

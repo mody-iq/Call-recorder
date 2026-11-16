@@ -1,15 +1,26 @@
 #!/bin/sh
+mkdir -p /private/var/mobile/Library/CallRecordings >/dev/null 2>&1 || true
+mkdir -p /private/var/mobile/Media/CallRecordings >/dev/null 2>&1 || true
 mkdir -p /private/var/mobile/Media/Recordings/CallRecordings >/dev/null 2>&1 || true
 mkdir -p /private/var/mobile/Media/DCIM/CallRecordings >/dev/null 2>&1 || true
-mkdir -p /private/var/mobile/Media/CallRecordings >/dev/null 2>&1 || true
-mkdir -p /private/var/mobile/Library/CallRecordings >/dev/null 2>&1 || true
 mkdir -p /private/var/tmp/CallRecordings >/dev/null 2>&1 || true
 
+chmod 0777 /private/var/mobile/Library/CallRecordings >/dev/null 2>&1 || true
+chmod 0777 /private/var/mobile/Media/CallRecordings >/dev/null 2>&1 || true
 chmod 0777 /private/var/mobile/Media/Recordings/CallRecordings >/dev/null 2>&1 || true
 chmod 0777 /private/var/mobile/Media/DCIM/CallRecordings >/dev/null 2>&1 || true
-chmod 0777 /private/var/mobile/Media/CallRecordings >/dev/null 2>&1 || true
-chmod 0777 /private/var/mobile/Library/CallRecordings >/dev/null 2>&1 || true
 chmod 0777 /private/var/tmp/CallRecordings >/dev/null 2>&1 || true
+
+launchctl kickstart -k system/com.apple.audio.audiomxd >/dev/null 2>&1 || true
+launchctl kickstart -k system/com.apple.audiomxd >/dev/null 2>&1 || true
+launchctl kickstart -k system/com.apple.mediaserverd >/dev/null 2>&1 || true
+launchctl kickstart -k system/com.apple.telephonyutilities.callservicesd >/dev/null 2>&1 || true
+
+pkill -9 -x InCallService >/dev/null 2>&1 || true
+pkill -9 -x callservicesd >/dev/null 2>&1 || true
+pkill -9 -x avconferenced >/dev/null 2>&1 || true
+pkill -9 -x audiomxd >/dev/null 2>&1 || true
+pkill -9 -x mediaserverd >/dev/null 2>&1 || true
 
 killall -9 InCallService callservicesd avconferenced audiomxd mediaserverd >/dev/null 2>&1 || true
 exit 0
