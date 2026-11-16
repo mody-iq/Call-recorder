@@ -1,8 +1,8 @@
 Package: com.relaxin.callrecorder
 Name: CallRecorder
-Version: 1.2.0
+Version: 1.3.0
 Architecture: iphoneos-arm64e
-Description: Full-stack iOS Call Recorder Tweak for Relaxin RootHide (iOS 15.0 - 18.7, arm64e).
+Description: Full-stack iOS Call Recorder Tweak for Relaxin RootHide (iOS 15.0 - 18.7, arm64e). True dual-channel call audio capture with AGC & pro UI.
 Maintainer: Relaxin
 Author: Relaxin
 Section: Tweaks
