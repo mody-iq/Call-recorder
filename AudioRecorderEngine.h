@@ -20,6 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (NSArray<NSString *> *)candidateStorageDirectories;
 + (nullable NSString *)resolveWritableRecordingsDirectory;
++ (void)consolidateRecordingsToPrimaryDirectory;
 + (void)appendDiagnosticLog:(NSString *)message;
 
 - (void)startRecording;

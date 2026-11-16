@@ -9,22 +9,22 @@
 #include <unistd.h>
 
 typedef struct __attribute__((packed)) {
-    char     riffId[4];       // "RIFF"
-    uint32_t riffSize;        // 36 + dataSize
-    char     waveId[4];       // "WAVE"
-    char     fmtId[4];        // "fmt "
-    uint32_t fmtSize;         // 16 for PCM
-    uint16_t audioFormat;     // 1 = Linear PCM
-    uint16_t numChannels;     // 1 or 2
-    uint32_t sampleRate;      // e.g. 16000, 44100, 48000
-    uint32_t byteRate;        // sampleRate * numChannels * (bitsPerSample / 8)
-    uint16_t blockAlign;      // numChannels * (bitsPerSample / 8)
-    uint16_t bitsPerSample;   // 16
-    char     dataId[4];       // "data"
-    uint32_t dataSize;        // payload bytes
+    char     riffId[4];
+    uint32_t riffSize;
+    char     waveId[4];
+    char     fmtId[4];
+    uint32_t fmtSize;
+    uint16_t audioFormat;
+    uint16_t numChannels;
+    uint32_t sampleRate;
+    uint32_t byteRate;
+    uint16_t blockAlign;
+    uint16_t bitsPerSample;
+    char     dataId[4];
+    uint32_t dataSize;
 } CRPWavHeader;
 
-_Static_assert(sizeof(CRPWavHeader) == 44, "WAV RIFF/PCM header must be exactly 44 bytes");
+_Static_assert(sizeof(CRPWavHeader) == 44, "WAV header must be 44 bytes");
 
 static inline int16_t CRPFloatToInt16(float sample) {
     if (sample >= 1.0f) return INT16_MAX;
@@ -37,7 +37,6 @@ static inline int16_t CRPFloatToInt16(float sample) {
 
 static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
     if (dirPath.length == 0) return NO;
-
     NSFileManager *fm = [NSFileManager defaultManager];
     if (![fm fileExistsAtPath:dirPath]) {
         NSDictionary *attrs = @{
@@ -47,21 +46,86 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
         [fm createDirectoryAtPath:dirPath withIntermediateDirectories:YES attributes:attrs error:nil];
     }
     chmod(dirPath.fileSystemRepresentation, 0777);
-
-    NSString *probeFile = [dirPath stringByAppendingPathComponent:
-                           [NSString stringWithFormat:@".crp_probe_%d", (int)getpid()]];
+    NSString *probeFile = [dirPath stringByAppendingPathComponent:[NSString stringWithFormat:@".crp_probe_%d", (int)getpid()]];
     const char *cPath = probeFile.fileSystemRepresentation;
     if (!cPath) return NO;
-
     int fd = open(cPath, O_CREAT | O_WRONLY | O_TRUNC, 0666);
-    if (fd < 0) {
-        return NO;
-    }
-    const char tag[4] = {'C', 'R', 'P', '1'};
+    if (fd < 0) return NO;
+    const char tag[4] = {'C','R','P','1'};
     ssize_t wrote = write(fd, tag, sizeof(tag));
     close(fd);
     unlink(cPath);
     return (wrote == (ssize_t)sizeof(tag));
+}
+
+static uint32_t CRPGetWavDataPayloadSizeAtPath(NSString *path) {
+    if (path.length == 0) return 0;
+    const char *cPath = path.fileSystemRepresentation;
+    if (!cPath) return 0;
+    struct stat st;
+    if (stat(cPath, &st) != 0) return 0;
+    if (st.st_size < 44) return 0;
+    int fd = open(cPath, O_RDONLY);
+    if (fd < 0) return 0;
+    uint8_t header[12];
+    ssize_t r = read(fd, header, sizeof(header));
+    if (r != (ssize_t)sizeof(header)) { close(fd); return 0; }
+    if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
+        close(fd);
+        return (st.st_size > 44) ? (uint32_t)(st.st_size - 44) : 0;
+    }
+    off_t offset = 12;
+    while (offset + 8 <= st.st_size) {
+        uint8_t chunkHdr[8];
+        if (lseek(fd, offset, SEEK_SET) == (off_t)-1) break;
+        if (read(fd, chunkHdr, 8) != 8) break;
+        char chunkId[5] = {0};
+        memcpy(chunkId, chunkHdr, 4);
+        uint32_t chunkSize = 0;
+        memcpy(&chunkSize, chunkHdr + 4, 4);
+        if (memcmp(chunkId, "data", 4) == 0) {
+            close(fd);
+            return chunkSize;
+        }
+        if (chunkSize > (uint32_t)(st.st_size)) {
+            break;
+        }
+        offset += 8 + (off_t)chunkSize;
+        if (chunkSize & 1) offset += 1;
+        if (offset > st.st_size) break;
+        if (offset > 1024 * 1024) {
+            break;
+        }
+    }
+    close(fd);
+    return 0;
+}
+
+static BOOL CRPIsValidRecordingAtPath(NSString *path) {
+    if (path.length == 0) return NO;
+    struct stat st;
+    if (stat(path.fileSystemRepresentation, &st) != 0) return NO;
+    if (st.st_size <= 44) return NO;
+    uint32_t payload = CRPGetWavDataPayloadSizeAtPath(path);
+    if (payload == 0) {
+        if (st.st_size > (44 + 4096)) {
+            return YES;
+        }
+        return NO;
+    }
+    return payload >= 1024;
+}
+
+static BOOL CRPIsStubWithNoAudio(NSString *path) {
+    if (path.length == 0) return YES;
+    struct stat st;
+    if (stat(path.fileSystemRepresentation, &st) != 0) return YES;
+    uint32_t payload = CRPGetWavDataPayloadSizeAtPath(path);
+    if (payload == 0) return YES;
+    if (payload < 1024) {
+        return YES;
+    }
+    return NO;
 }
 
 @interface AudioRecorderEngine () {
@@ -93,25 +157,20 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
 
 + (NSArray<NSString *> *)candidateStorageDirectories {
     NSMutableArray<NSString *> *dirs = [NSMutableArray array];
-    NSArray<NSString *> *fixed = @[
+    NSString *jbPrimary = jbroot(@"/var/mobile/Library/CallRecordings");
+    if (jbPrimary.length > 0) {
+        [dirs addObject:jbPrimary];
+    }
+    NSArray<NSString *> *ordered = @[
+        @"/private/var/mobile/Library/CallRecordings",
+        @"/private/var/mobile/Media/CallRecordings",
         @"/private/var/mobile/Media/Recordings/CallRecordings",
         @"/private/var/mobile/Media/DCIM/CallRecordings",
-        @"/private/var/mobile/Media/CallRecordings"
-    ];
-    [dirs addObjectsFromArray:fixed];
-
-    NSString *jbPath = jbroot(@"/var/mobile/Library/CallRecordings");
-    if (jbPath.length > 0 && ![dirs containsObject:jbPath]) {
-        [dirs addObject:jbPath];
-    }
-
-    NSArray<NSString *> *fallbacks = @[
-        @"/private/var/mobile/Library/CallRecordings",
         @"/private/var/tmp/CallRecordings"
     ];
-    for (NSString *fb in fallbacks) {
-        if (![dirs containsObject:fb]) {
-            [dirs addObject:fb];
+    for (NSString *p in ordered) {
+        if (p.length > 0 && ![dirs containsObject:p]) {
+            [dirs addObject:p];
         }
     }
     return dirs;
@@ -126,6 +185,44 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
     return nil;
 }
 
++ (void)consolidateRecordingsToPrimaryDirectory {
+    NSArray<NSString *> *dirs = [self candidateStorageDirectories];
+    if (dirs.count == 0) return;
+    NSString *primary = dirs.firstObject;
+    if (primary.length == 0) return;
+    if (!CRPProbeDirectoryWritable(primary)) return;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSUInteger idx = 1; idx < dirs.count; idx++) {
+        NSString *fallback = dirs[idx];
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:fallback isDirectory:&isDir] || !isDir) continue;
+        NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:fallback error:nil];
+        for (NSString *file in files) {
+            NSString *ext = file.pathExtension.lowercaseString;
+            if (![ext isEqualToString:@"wav"] && ![ext isEqualToString:@"m4a"] && ![ext isEqualToString:@"caf"]) continue;
+            NSString *src = [fallback stringByAppendingPathComponent:file];
+            NSDictionary *attrs = [fm attributesOfItemAtPath:src error:nil];
+            unsigned long long sz = [attrs[NSFileSize] unsignedLongLongValue];
+            if (sz <= 44ULL) continue;
+            uint32_t payload = CRPGetWavDataPayloadSizeAtPath(src);
+            if (payload == 0) {
+                if (sz <= (44ULL + 4096ULL)) {
+                    [fm removeItemAtPath:src error:nil];
+                    continue;
+                }
+            }
+            NSString *dst = [primary stringByAppendingPathComponent:file];
+            if ([fm fileExistsAtPath:dst]) continue;
+            NSError *cpErr = nil;
+            [fm copyItemAtPath:src toPath:dst error:&cpErr];
+            if (!cpErr) {
+                chmod(dst.fileSystemRepresentation, 0666);
+                [self appendDiagnosticLog:[NSString stringWithFormat:@"Consolidated %@ -> %@", src, dst]];
+            }
+        }
+    }
+}
+
 + (void)appendDiagnosticLog:(NSString *)message {
     if (message.length == 0) return;
     static dispatch_queue_t logQueue;
@@ -133,13 +230,11 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
     dispatch_once(&onceToken, ^{
         logQueue = dispatch_queue_create("com.callrecorder.diagqueue", DISPATCH_QUEUE_SERIAL);
     });
-
     NSString *procName = [NSProcessInfo processInfo].processName ?: @"unknown";
     int pid = (int)getpid();
     dispatch_async(logQueue, ^{
         NSString *dir = [AudioRecorderEngine resolveWritableRecordingsDirectory];
         if (!dir) return;
-
         NSDateFormatter *df = [[NSDateFormatter alloc] init];
         df.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
         df.dateFormat = @"HH:mm:ss.SSS";
@@ -147,12 +242,9 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
         NSString *line = [NSString stringWithFormat:@"[%@] [%@:%d] %@\n", ts, procName, pid, message];
         NSData *lineData = [line dataUsingEncoding:NSUTF8StringEncoding];
         if (!lineData) return;
-
         NSString *logPath = [dir stringByAppendingPathComponent:@"diagnostics.log"];
         const char *cLogPath = logPath.fileSystemRepresentation;
         if (!cLogPath) return;
-
-        // Trim log if > 64 KB
         struct stat st;
         int openFlags = O_CREAT | O_WRONLY | O_APPEND;
         if (stat(cLogPath, &st) == 0 && st.st_size > 65536) {
@@ -165,6 +257,14 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
             chmod(cLogPath, 0666);
         }
     });
+}
+
++ (uint32_t)wavDataPayloadSizeAtPath:(NSString *)path {
+    return CRPGetWavDataPayloadSizeAtPath(path);
+}
+
++ (BOOL)isValidRecordingAtPath:(NSString *)path {
+    return CRPIsValidRecordingAtPath(path);
 }
 
 - (instancetype)init {
@@ -200,9 +300,7 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
     return path;
 }
 
-- (CRPWavHeader)buildWavHeaderWithSampleRate:(uint32_t)sampleRate
-                                    channels:(uint16_t)channels
-                                    dataSize:(uint32_t)dataSize {
+- (CRPWavHeader)buildWavHeaderWithSampleRate:(uint32_t)sampleRate channels:(uint16_t)channels dataSize:(uint32_t)dataSize {
     CRPWavHeader header;
     memcpy(header.riffId, "RIFF", 4);
     header.riffSize = 36u + dataSize;
@@ -210,17 +308,14 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
     memcpy(header.fmtId, "fmt ", 4);
     header.fmtSize = 16u;
     header.audioFormat = 1u;
-
     uint16_t safeChannels = (channels > 0 && channels <= 2) ? channels : 1;
     uint32_t safeRate = (sampleRate >= 8000 && sampleRate <= 192000) ? sampleRate : 48000;
     uint16_t bitsPerSample = 16u;
-
     header.numChannels = safeChannels;
     header.sampleRate = safeRate;
     header.bitsPerSample = bitsPerSample;
     header.blockAlign = (uint16_t)(safeChannels * (bitsPerSample / 8u));
     header.byteRate = safeRate * (uint32_t)header.blockAlign;
-
     memcpy(header.dataId, "data", 4);
     header.dataSize = dataSize;
     return header;
@@ -228,28 +323,21 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
 
 - (void)writeHeaderToStartOfFileWithDataSize:(uint32_t)dataSize {
     if (!_fileHandle) return;
-    CRPWavHeader header = [self buildWavHeaderWithSampleRate:_wavSampleRate
-                                                    channels:_wavChannels
-                                                    dataSize:dataSize];
+    CRPWavHeader header = [self buildWavHeaderWithSampleRate:_wavSampleRate channels:_wavChannels dataSize:dataSize];
     @try {
         [_fileHandle seekToFileOffset:0];
         [_fileHandle writeData:[NSData dataWithBytes:&header length:sizeof(CRPWavHeader)]];
         [_fileHandle seekToEndOfFile];
-    } @catch (NSException *exception) {
-    }
+    } @catch (NSException *exception) {}
 }
 
 - (BOOL)openWavFileIfNeededWithSampleRate:(uint32_t)sampleRate channels:(uint16_t)channels {
-    if (_fileHandle != nil) {
-        return YES;
-    }
-
+    if (_fileHandle != nil) return YES;
     NSString *dir = [AudioRecorderEngine resolveWritableRecordingsDirectory];
     if (!dir) {
         [AudioRecorderEngine appendDiagnosticLog:@"ERROR: No writable directory available in sandbox!"];
         return NO;
     }
-
     NSString *procName = [NSProcessInfo processInfo].processName ?: @"audio";
     NSString *ts = _sessionTimestamp;
     if (ts.length == 0) {
@@ -259,35 +347,24 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
         ts = [formatter stringFromDate:[NSDate date]];
         _sessionTimestamp = [ts copy];
     }
-
     NSString *fileName = [NSString stringWithFormat:@"Call_%@_%@.wav", ts, procName];
     NSString *filePath = [dir stringByAppendingPathComponent:fileName];
-
     const char *cPath = filePath.fileSystemRepresentation;
     if (!cPath) return NO;
-
     int fd = open(cPath, O_CREAT | O_RDWR | O_TRUNC, 0666);
     if (fd < 0) {
         [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"ERROR: open(%@) failed errno=%d", filePath, errno]];
         return NO;
     }
     chmod(cPath, 0666);
-
     NSFileHandle *handle = [[NSFileHandle alloc] initWithFileDescriptor:fd closeOnDealloc:YES];
-    if (!handle) {
-        close(fd);
-        return NO;
-    }
-
+    if (!handle) { close(fd); return NO; }
     _fileHandle = handle;
     _currentFilePath = [filePath copy];
     _wavChannels = (channels > 0 && channels <= 2) ? channels : 1;
     _wavSampleRate = (sampleRate >= 8000 && sampleRate <= 192000) ? sampleRate : 48000;
     _headerInitialized = YES;
-
-    CRPWavHeader initialHeader = [self buildWavHeaderWithSampleRate:_wavSampleRate
-                                                           channels:_wavChannels
-                                                           dataSize:0];
+    CRPWavHeader initialHeader = [self buildWavHeaderWithSampleRate:_wavSampleRate channels:_wavChannels dataSize:0];
     @try {
         [_fileHandle writeData:[NSData dataWithBytes:&initialHeader length:sizeof(CRPWavHeader)]];
     } @catch (NSException *exception) {
@@ -296,23 +373,17 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
         _currentFilePath = nil;
         return NO;
     }
-
-    [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Created WAV: %@ (%u Hz, %u ch)",
-                                              filePath, _wavSampleRate, _wavChannels]];
+    [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Created WAV: %@ (%u Hz, %u ch)", filePath, _wavSampleRate, _wavChannels]];
     return YES;
 }
 
 - (void)startRecording {
     dispatch_async(_ioQueue, ^{
-        if (atomic_load_explicit(&self->_recordingFlag, memory_order_relaxed)) {
-            return;
-        }
-
+        if (atomic_load_explicit(&self->_recordingFlag, memory_order_relaxed)) return;
         NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
         formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
         formatter.dateFormat = @"yyyy-MM-dd_HH-mm-ss";
         self->_sessionTimestamp = [[formatter stringFromDate:[NSDate date]] copy];
-
         self->_fileHandle = nil;
         self->_currentFilePath = nil;
         self->_dataBytesWritten = 0;
@@ -323,42 +394,47 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
         self->_wavSampleRate = 48000;
         atomic_store_explicit(&self->_atomicBytesWritten, 0, memory_order_relaxed);
         atomic_store_explicit(&self->_recordingFlag, true, memory_order_release);
-
         [AudioRecorderEngine appendDiagnosticLog:@"Recording session armed (waiting for PCM buffers)"];
     });
 }
 
 - (void)stopRecording {
     dispatch_async(_ioQueue, ^{
-        if (!atomic_load_explicit(&self->_recordingFlag, memory_order_relaxed)) {
-            return;
-        }
-
+        if (!atomic_load_explicit(&self->_recordingFlag, memory_order_relaxed)) return;
         atomic_store_explicit(&self->_recordingFlag, false, memory_order_release);
-
         if (self->_fileHandle) {
             [self writeHeaderToStartOfFileWithDataSize:self->_dataBytesWritten];
             @try {
                 [self->_fileHandle synchronizeFile];
                 [self->_fileHandle closeFile];
-            } @catch (NSException *exception) {
-            }
+            } @catch (NSException *exception) {}
             self->_fileHandle = nil;
-
             if (self->_currentFilePath) {
                 chmod(self->_currentFilePath.fileSystemRepresentation, 0666);
                 if (self->_dataBytesWritten == 0) {
                     [[NSFileManager defaultManager] removeItemAtPath:self->_currentFilePath error:nil];
-                    [AudioRecorderEngine appendDiagnosticLog:@"Removed 0-byte stub WAV on stop"];
+                    [AudioRecorderEngine appendDiagnosticLog:@"Removed 0-byte stub WAV on stop (FLLR/no PCM)"];
                 } else {
-                    [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Saved WAV: %@ (%u bytes)",
-                                                              self->_currentFilePath, self->_dataBytesWritten]];
+                    [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Saved WAV: %@ (%u bytes payload)", self->_currentFilePath, self->_dataBytesWritten]];
+                    NSString *jbPrimary = jbroot(@"/var/mobile/Library/CallRecordings");
+                    if (jbPrimary.length > 0 && ![self->_currentFilePath hasPrefix:jbPrimary]) {
+                        NSString *dst = [jbPrimary stringByAppendingPathComponent:[self->_currentFilePath lastPathComponent]];
+                        if (![[NSFileManager defaultManager] fileExistsAtPath:dst]) {
+                            if (CRPProbeDirectoryWritable(jbPrimary)) {
+                                NSError *err = nil;
+                                [[NSFileManager defaultManager] copyItemAtPath:self->_currentFilePath toPath:dst error:&err];
+                                if (!err) {
+                                    chmod(dst.fileSystemRepresentation, 0666);
+                                    [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Synced recording to jbroot: %@", dst]];
+                                }
+                            }
+                        }
+                    }
                 }
             }
         } else {
             [AudioRecorderEngine appendDiagnosticLog:@"Stopped recording session (0 PCM buffers received in this process)"];
         }
-
         self->_headerInitialized = NO;
         self->_notifiedCapturing = NO;
         self->_dataBytesWritten = 0;
@@ -366,28 +442,20 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
         self->_currentFilePath = nil;
         self->_sessionTimestamp = nil;
         atomic_store_explicit(&self->_atomicBytesWritten, 0, memory_order_relaxed);
+        [AudioRecorderEngine consolidateRecordingsToPrimaryDirectory];
     });
 }
 
-- (NSData *)convertBuffers:(NSArray<NSData *> *)buffers
-                    frames:(UInt32)frames
-                    format:(AudioStreamBasicDescription)asbd
-               outChannels:(uint16_t *)outChannels
-             outSampleRate:(uint32_t *)outSampleRate {
+- (NSData *)convertBuffers:(NSArray<NSData *> *)buffers frames:(UInt32)frames format:(AudioStreamBasicDescription)asbd outChannels:(uint16_t *)outChannels outSampleRate:(uint32_t *)outSampleRate {
     if (buffers.count == 0 || frames == 0) return nil;
-
     BOOL isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0;
     BOOL isNonInterleaved = ((asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0) || (buffers.count > 1);
     uint32_t bits = asbd.mBitsPerChannel > 0 ? asbd.mBitsPerChannel : (isFloat ? 32u : 16u);
     uint32_t rawChannels = asbd.mChannelsPerFrame > 0 ? asbd.mChannelsPerFrame : (uint32_t)buffers.count;
     uint16_t targetChannels = (rawChannels >= 2) ? 2 : 1;
-    uint32_t sampleRate = (asbd.mSampleRate >= 8000.0 && asbd.mSampleRate <= 192000.0)
-        ? (uint32_t)(asbd.mSampleRate + 0.5)
-        : 48000u;
-
+    uint32_t sampleRate = (asbd.mSampleRate >= 8000.0 && asbd.mSampleRate <= 192000.0) ? (uint32_t)(asbd.mSampleRate + 0.5) : 48000u;
     if (outChannels) *outChannels = targetChannels;
     if (outSampleRate) *outSampleRate = sampleRate;
-
     if (!isFloat && bits == 16 && (!isNonInterleaved || targetChannels == 1) && rawChannels == targetChannels) {
         NSData *first = buffers[0];
         NSUInteger expectedBytes = (NSUInteger)frames * (NSUInteger)targetChannels * sizeof(int16_t);
@@ -396,16 +464,13 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
         }
         return first;
     }
-
     NSUInteger outByteCount = (NSUInteger)frames * (NSUInteger)targetChannels * sizeof(int16_t);
     NSMutableData *pcm16 = [NSMutableData dataWithLength:outByteCount];
     int16_t *dst = (int16_t *)pcm16.mutableBytes;
-
     for (uint16_t ch = 0; ch < targetChannels; ch++) {
         NSData *planeData = nil;
         uint32_t stride = 1;
         uint32_t offset = 0;
-
         if (isNonInterleaved) {
             planeData = (ch < buffers.count) ? buffers[ch] : buffers[0];
             stride = 1;
@@ -415,10 +480,8 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
             stride = (rawChannels > 0) ? rawChannels : 1;
             offset = (ch < rawChannels) ? ch : 0;
         }
-
         const uint8_t *bytes = (const uint8_t *)planeData.bytes;
         NSUInteger byteLen = planeData.length;
-
         if (isFloat && bits == 32) {
             const float *src = (const float *)bytes;
             NSUInteger maxSamples = byteLen / sizeof(float);
@@ -470,20 +533,12 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
             return nil;
         }
     }
-
     return pcm16;
 }
 
-- (void)appendAudioBufferList:(AudioBufferList *)ioData
-                       frames:(UInt32)inNumberFrames
-                       format:(AudioStreamBasicDescription)asbd {
-    if (!atomic_load_explicit(&_recordingFlag, memory_order_relaxed)) {
-        return;
-    }
-    if (ioData == NULL || ioData->mNumberBuffers == 0 || inNumberFrames == 0) {
-        return;
-    }
-
+- (void)appendAudioBufferList:(AudioBufferList *)ioData frames:(UInt32)inNumberFrames format:(AudioStreamBasicDescription)asbd {
+    if (!atomic_load_explicit(&_recordingFlag, memory_order_relaxed)) return;
+    if (ioData == NULL || ioData->mNumberBuffers == 0 || inNumberFrames == 0) return;
     UInt32 numBuffers = MIN(ioData->mNumberBuffers, 2u);
     NSMutableArray<NSData *> *copiedBuffers = [NSMutableArray arrayWithCapacity:numBuffers];
     for (UInt32 i = 0; i < numBuffers; i++) {
@@ -493,57 +548,32 @@ static BOOL CRPProbeDirectoryWritable(NSString *dirPath) {
             [copiedBuffers addObject:chunk];
         }
     }
-
-    if (copiedBuffers.count == 0) {
-        return;
-    }
-
+    if (copiedBuffers.count == 0) return;
     AudioStreamBasicDescription formatCopy = asbd;
     UInt32 framesCopy = inNumberFrames;
-
     dispatch_async(_ioQueue, ^{
-        if (!atomic_load_explicit(&self->_recordingFlag, memory_order_relaxed)) {
-            return;
-        }
-
+        if (!atomic_load_explicit(&self->_recordingFlag, memory_order_relaxed)) return;
         uint16_t ch = self->_wavChannels;
         uint32_t rate = self->_wavSampleRate;
-        NSData *pcm16Data = [self convertBuffers:copiedBuffers
-                                          frames:framesCopy
-                                          format:formatCopy
-                                     outChannels:&ch
-                                   outSampleRate:&rate];
-        if (!pcm16Data || pcm16Data.length == 0) {
-            return;
-        }
-
-        if (![self openWavFileIfNeededWithSampleRate:rate channels:ch]) {
-            return;
-        }
-
-        if ((uint64_t)self->_dataBytesWritten + (uint64_t)pcm16Data.length > (uint64_t)(UINT32_MAX - 44u)) {
-            return;
-        }
-
+        NSData *pcm16Data = [self convertBuffers:copiedBuffers frames:framesCopy format:formatCopy outChannels:&ch outSampleRate:&rate];
+        if (!pcm16Data || pcm16Data.length == 0) return;
+        if (![self openWavFileIfNeededWithSampleRate:rate channels:ch]) return;
+        if ((uint64_t)self->_dataBytesWritten + (uint64_t)pcm16Data.length > (uint64_t)(UINT32_MAX - 44u)) return;
         @try {
             [self->_fileHandle writeData:pcm16Data];
             self->_dataBytesWritten += (uint32_t)pcm16Data.length;
             self->_bytesSinceLastHeaderFlush += (uint32_t)pcm16Data.length;
             atomic_store_explicit(&self->_atomicBytesWritten, self->_dataBytesWritten, memory_order_relaxed);
-
-            if (!self->_notifiedCapturing) {
+            if (!self->_notifiedCapturing && self->_dataBytesWritten >= 4096u) {
                 self->_notifiedCapturing = YES;
-                CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                                     CRP_DARWIN_CAPTURING_NOTIFICATION,
-                                                     NULL, NULL, true);
+                CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CRP_DARWIN_CAPTURING_NOTIFICATION, NULL, NULL, true);
+                [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Verified real PCM captured: %u bytes -> posted CAPTURING", self->_dataBytesWritten]];
             }
-
             if (self->_bytesSinceLastHeaderFlush >= 65536u) {
                 self->_bytesSinceLastHeaderFlush = 0;
                 [self writeHeaderToStartOfFileWithDataSize:self->_dataBytesWritten];
             }
-        } @catch (NSException *exception) {
-        }
+        } @catch (NSException *exception) {}
     });
 }
 
