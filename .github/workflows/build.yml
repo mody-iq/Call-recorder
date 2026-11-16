@@ -43,6 +43,7 @@ jobs:
 
       - name: Build RootHide .deb package
         run: |
+          chmod 0755 layout/DEBIAN/postinst
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide messages=yes
           ls -lh packages/
 
