@@ -9,9 +9,9 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = CallRecorder
 
 CallRecorder_FILES = Tweak.x AudioRecorderEngine.m
-CallRecorder_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+CallRecorder_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-error
 CallRecorder_FRAMEWORKS = UIKit Foundation AudioToolbox AVFoundation CoreAudio
-CallRecorder_LIBRARIES = substrate roothide
+CallRecorder_LIBRARIES = roothide
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
