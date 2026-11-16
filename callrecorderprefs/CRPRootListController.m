@@ -2,6 +2,9 @@
 #include <roothide.h>
 #include <stdint.h>
 
+#define CRP_PREFS_PING_NOTIFICATION CFSTR("com.relaxin.callrecorder/ping")
+#define CRP_PREFS_PONG_NOTIFICATION CFSTR("com.relaxin.callrecorder/pong")
+
 @interface CRPRecordingItem : NSObject
 @property (nonatomic, copy) NSString *fileName;
 @property (nonatomic, copy) NSString *filePath;
@@ -17,7 +20,21 @@
 @property (nonatomic, strong) NSMutableArray<CRPRecordingItem *> *recordings;
 @property (nonatomic, strong) AVAudioPlayer *audioPlayer;
 @property (nonatomic, copy) NSString *currentlyPlayingPath;
+@property (nonatomic, assign) NSInteger pongCount;
 @end
+
+static void CRPPrefsPongCallback(CFNotificationCenterRef center,
+                                 void *observer,
+                                 CFStringRef name,
+                                 const void *object,
+                                 CFDictionaryRef userInfo) {
+    CRPRootListController *ctrl = (__bridge CRPRootListController *)observer;
+    if (ctrl) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ctrl.pongCount += 1;
+        });
+    }
+}
 
 @implementation CRPRootListController
 
@@ -38,15 +55,60 @@
     return nil;
 }
 
+- (NSArray<NSString *> *)candidateDirectories {
+    NSMutableArray<NSString *> *dirs = [NSMutableArray arrayWithObjects:
+        @"/private/var/mobile/Media/Recordings/CallRecordings",
+        @"/private/var/mobile/Media/DCIM/CallRecordings",
+        @"/private/var/mobile/Media/CallRecordings",
+        nil];
+
+    NSString *jbDir = jbroot(@"/var/mobile/Library/CallRecordings");
+    if (jbDir.length > 0 && ![dirs containsObject:jbDir]) {
+        [dirs addObject:jbDir];
+    }
+
+    NSArray<NSString *> *extra = @[
+        @"/private/var/mobile/Library/CallRecordings",
+        @"/private/var/tmp/CallRecordings"
+    ];
+    for (NSString *d in extra) {
+        if (![dirs containsObject:d]) {
+            [dirs addObject:d];
+        }
+    }
+    return dirs;
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Call Recorder";
     self.recordings = [NSMutableArray array];
+    self.pongCount = 0;
+
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)self,
+                                    CRPPrefsPongCallback,
+                                    CRP_PREFS_PONG_NOTIFICATION,
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
 
     UIBarButtonItem *refreshBtn = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
                                                                                 target:self
                                                                                 action:@selector(loadRecordings)];
-    self.navigationItem.rightBarButtonItem = refreshBtn;
+    UIImage *diagIcon = [UIImage systemImageNamed:@"stethoscope"] ?: [UIImage systemImageNamed:@"info.circle"];
+    UIBarButtonItem *diagBtn = nil;
+    if (diagIcon) {
+        diagBtn = [[UIBarButtonItem alloc] initWithImage:diagIcon
+                                                   style:UIBarButtonItemStylePlain
+                                                  target:self
+                                                  action:@selector(showDiagnostics)];
+    } else {
+        diagBtn = [[UIBarButtonItem alloc] initWithTitle:@"Diag"
+                                                   style:UIBarButtonItemStylePlain
+                                                  target:self
+                                                  action:@selector(showDiagnostics)];
+    }
+    self.navigationItem.rightBarButtonItems = @[refreshBtn, diagBtn];
 
     UITableView *tv = [self recordingsTableView];
     if (tv) {
@@ -54,11 +116,20 @@
         tv.allowsMultipleSelectionDuringEditing = NO;
     }
 
+    [self pingDaemons];
     [self loadRecordings];
+}
+
+- (void)dealloc {
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)self,
+                                       CRP_PREFS_PONG_NOTIFICATION,
+                                       NULL);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self pingDaemons];
     [self loadRecordings];
 }
 
@@ -67,12 +138,18 @@
     [self stopPlayback];
 }
 
-- (NSString *)recordingsDirectory {
-    return jbroot(@"/var/mobile/Library/CallRecordings");
+- (void)pingDaemons {
+    self.pongCount = 0;
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CRP_PREFS_PING_NOTIFICATION,
+                                         NULL, NULL, true);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[self recordingsTableView] reloadData];
+    });
 }
 
 - (NSTimeInterval)readWavDurationAtPath:(NSString *)path fileSize:(unsigned long long)fileSize {
-    if (fileSize <= 44) return 0.0;
+    if (fileSize <= 44ULL) return 0.0;
     NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
     if (!fh) return 0.0;
     NSData *hdr = [fh readDataOfLength:44];
@@ -81,7 +158,9 @@
 
     const uint8_t *b = (const uint8_t *)hdr.bytes;
     if (memcmp(b, "RIFF", 4) != 0 || memcmp(b + 8, "WAVE", 4) != 0) {
-        return 0.0;
+        NSURL *url = [NSURL fileURLWithPath:path];
+        AVAudioPlayer *tmp = [[AVAudioPlayer alloc] initWithContentsOfURL:url error:nil];
+        return tmp ? tmp.duration : 0.0;
     }
 
     uint32_t byteRate = 0;
@@ -98,26 +177,34 @@
     }
     [self.recordings removeAllObjects];
 
-    NSString *dir = [self recordingsDirectory];
     NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableSet<NSString *> *seenPaths = [NSMutableSet set];
 
-    if (![fm fileExistsAtPath:dir]) {
-        [[self recordingsTableView] reloadData];
-        return;
-    }
+    for (NSString *dir in [self candidateDirectories]) {
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:dir isDirectory:&isDir] || !isDir) {
+            continue;
+        }
 
-    NSError *error = nil;
-    NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dir error:&error];
-    if (error || !files) {
-        [[self recordingsTableView] reloadData];
-        return;
-    }
+        NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dir error:nil];
+        for (NSString *file in files) {
+            NSString *ext = [file pathExtension].lowercaseString;
+            if (![ext isEqualToString:@"wav"] && ![ext isEqualToString:@"m4a"] && ![ext isEqualToString:@"caf"]) {
+                continue;
+            }
 
-    for (NSString *file in files) {
-        if ([[file pathExtension].lowercaseString isEqualToString:@"wav"]) {
-            NSString *fullPath = [dir stringByAppendingPathComponent:file];
+            NSString *fullPath = [[dir stringByAppendingPathComponent:file] stringByStandardizingPath];
+            if ([seenPaths containsObject:fullPath]) {
+                continue;
+            }
+
             NSDictionary *attrs = [fm attributesOfItemAtPath:fullPath error:nil];
             unsigned long long size = [attrs[NSFileSize] unsignedLongLongValue];
+            if (size <= 44ULL) {
+                continue;
+            }
+
+            [seenPaths addObject:fullPath];
 
             CRPRecordingItem *item = [[CRPRecordingItem alloc] init];
             item.fileName = file;
@@ -135,6 +222,75 @@
 
     [[self recordingsTableView] reloadData];
 }
+
+#pragma mark - Diagnostics
+
+- (NSString *)collectDiagnosticsReport {
+    NSMutableString *report = [NSMutableString string];
+    [report appendFormat:@"Audio Daemons Responding: %ld\n", (long)self.pongCount];
+    if (self.pongCount == 0) {
+        [report appendString:@"⚠️ Note: No audio daemon replied to ping. In RootHide Manager / Bootstrap, make sure Tweak Injection is enabled for System Daemons (audiomxd, mediaserverd, callservicesd) or run Userspace Reboot.\n"];
+    } else {
+        [report appendString:@"✅ Audio daemon hook is active and ready.\n"];
+    }
+
+    [report appendString:@"\n--- Storage Paths ---\n"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *dir in [self candidateDirectories]) {
+        BOOL exists = [fm fileExistsAtPath:dir];
+        BOOL writable = [fm isWritableFileAtPath:dir];
+        [report appendFormat:@"%@ [exists=%d, writable=%d]\n", dir, exists, writable];
+    }
+
+    [report appendString:@"\n--- Recent Logs ---\n"];
+    BOOL foundLog = NO;
+    for (NSString *dir in [self candidateDirectories]) {
+        NSString *logPath = [dir stringByAppendingPathComponent:@"diagnostics.log"];
+        if ([fm fileExistsAtPath:logPath]) {
+            NSString *content = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil];
+            if (content.length > 0) {
+                foundLog = YES;
+                if (content.length > 3000) {
+                    content = [content substringFromIndex:(content.length - 3000)];
+                }
+                [report appendFormat:@"(%@)\n%@\n", dir.lastPathComponent, content];
+            }
+        }
+    }
+    if (!foundLog) {
+        [report appendString:@"No diagnostic logs recorded yet. Start a call and tap the recorder button first.\n"];
+    }
+
+    return report;
+}
+
+- (void)showDiagnostics {
+    [self pingDaemons];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSString *report = [self collectDiagnosticsReport];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"CallRecorder v1.1 Diagnostics"
+                                                                       message:report
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Copy Log"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *action) {
+            [UIPasteboard generalPasteboard].string = report;
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Clear Log"
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction *action) {
+            NSFileManager *fm = [NSFileManager defaultManager];
+            for (NSString *dir in [self candidateDirectories]) {
+                NSString *logPath = [dir stringByAppendingPathComponent:@"diagnostics.log"];
+                [fm removeItemAtPath:logPath error:nil];
+            }
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+#pragma mark - Playback
 
 - (void)stopPlayback {
     if (self.audioPlayer.isPlaying) {
@@ -163,7 +319,7 @@
     self.audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:url error:&error];
     if (!self.audioPlayer || error) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Playback Error"
-                                                                       message:error.localizedDescription ?: @"Unable to play this WAV recording."
+                                                                       message:error.localizedDescription ?: @"Unable to play this recording."
                                                                 preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
@@ -223,7 +379,10 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return [NSString stringWithFormat:@"Tap a recording to play/stop • Swipe left to delete • Tap share button to export.\nStorage: %@", [self recordingsDirectory]];
+    NSString *daemonState = self.pongCount > 0
+        ? [NSString stringWithFormat:@"Audio Daemons Active (%ld)", (long)self.pongCount]
+        : @"Audio Daemons: Waiting / Fallback Mode (Tap ⓘ above for Diagnostics)";
+    return [NSString stringWithFormat:@"%@\nTap a recording to play/stop • Swipe left to delete • Tap share button to export.\nPrimary Storage: /var/mobile/Media/Recordings/CallRecordings", daemonState];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

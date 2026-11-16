@@ -13,6 +13,7 @@
 			<string>mediaserverd</string>
 			<string>audiomxd</string>
 			<string>callservicesd</string>
+			<string>avconferenced</string>
 		</array>
 	</dict>
 </dict>

@@ -8,9 +8,6 @@
 #include <substrate.h>
 #include <roothide.h>
 
-#define CRP_DARWIN_START_NOTIFICATION CFSTR("com.relaxin.callrecorder/start")
-#define CRP_DARWIN_STOP_NOTIFICATION  CFSTR("com.relaxin.callrecorder/stop")
-
 @interface TUCall : NSObject
 @property (nonatomic, readonly) int status;
 @end
@@ -28,5 +25,6 @@
 
 @interface CRPFloatingRecorderView : UIView
 @property (nonatomic, assign, readonly) BOOL isRecording;
+- (void)markCapturingVerified;
 - (void)stopRecordingIfNeeded;
 @end

@@ -1,0 +1,15 @@
+#!/bin/sh
+mkdir -p /private/var/mobile/Media/Recordings/CallRecordings >/dev/null 2>&1 || true
+mkdir -p /private/var/mobile/Media/DCIM/CallRecordings >/dev/null 2>&1 || true
+mkdir -p /private/var/mobile/Media/CallRecordings >/dev/null 2>&1 || true
+mkdir -p /private/var/mobile/Library/CallRecordings >/dev/null 2>&1 || true
+mkdir -p /private/var/tmp/CallRecordings >/dev/null 2>&1 || true
+
+chmod 0777 /private/var/mobile/Media/Recordings/CallRecordings >/dev/null 2>&1 || true
+chmod 0777 /private/var/mobile/Media/DCIM/CallRecordings >/dev/null 2>&1 || true
+chmod 0777 /private/var/mobile/Media/CallRecordings >/dev/null 2>&1 || true
+chmod 0777 /private/var/mobile/Library/CallRecordings >/dev/null 2>&1 || true
+chmod 0777 /private/var/tmp/CallRecordings >/dev/null 2>&1 || true
+
+killall -9 InCallService callservicesd avconferenced audiomxd mediaserverd >/dev/null 2>&1 || true
+exit 0
