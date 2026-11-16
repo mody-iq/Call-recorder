@@ -43,8 +43,10 @@ static NSDictionary *CRPCurrentCallMetadata(void) {
         @try {
             if ([call respondsToSelector:@selector(handle)]) {
                 id h=[call valueForKey:@"handle"];
-                if ([h respondsToSelector:@selector(value)]) handle=[h value] ?: handle;
-                else if ([h isKindOfClass:[NSString class]]) handle=h;
+                if ([h respondsToSelector:@selector(value)]) {
+                    id hv = [(id)h performSelector:@selector(value)];
+                    if (hv) handle = [NSString stringWithFormat:@"%@", hv];
+                } else if ([h isKindOfClass:[NSString class]]) handle=h;
             } else if ([call respondsToSelector:@selector(valueForKey:)]) {
                 id v=[call valueForKey:@"handle"]; if (v) handle=[NSString stringWithFormat:@"%@",v];
             }
