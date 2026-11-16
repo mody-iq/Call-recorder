@@ -1,0 +1,45 @@
+name: Build RootHide CallRecorder Tweak
+
+on:
+  push:
+    branches:
+      - main
+      - "**"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    env:
+      THEOS: /Users/runner/theos
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install ldid dpkg make
+
+      - name: Clone RootHide Theos
+        run: |
+          git clone --recursive https://github.com/roothide/theos.git $THEOS
+
+      - name: Download and install patched iOS SDKs
+        run: |
+          mkdir -p $THEOS/sdks
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/theos-sdks
+          cp -R /tmp/theos-sdks/*.sdk $THEOS/sdks/
+          rm -rf /tmp/theos-sdks
+
+      - name: Build RootHide .deb package
+        run: |
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CallRecorder-RootHide-deb
+          path: packages/*.deb
+          if-no-files-found: error
