@@ -1,0 +1,9 @@
+Package: com.relaxin.callrecorder
+Name: CallRecorder
+Version: 1.0.0
+Architecture: iphoneos-arm64e
+Description: Full-stack iOS Call Recorder Tweak for RootHide (iOS 15.0 - 18.7, arm64e).
+Maintainer: Relaxin
+Author: Relaxin
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000), preferenceloader, com.roothide.roothide
