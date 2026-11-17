@@ -10,6 +10,12 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  checks: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -43,20 +49,36 @@ jobs:
 
       - name: Syntax check prefs
         run: |
-          echo "=== SYNTAX CHECK callrecorderprefs ==="
           xcrun --sdk iphoneos clang -x objective-c -fsyntax-only -fobjc-arc -I$THEOS/include -I$THEOS/vendor/include -I. -Icallrecorderprefs -F$THEOS/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks callrecorderprefs/CRPRootListController.m 2>&1 | tee syntax.log || true
           cat syntax.log
-          echo "=== END SYNTAX ==="
-          while IFS= read -r line; do echo "::warning::$line"; done < syntax.log
 
       - name: Build RootHide .deb package
         run: |
           chmod 0755 layout/DEBIAN/postinst
           set -o pipefail
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide messages=yes 2>&1 | tee build.log
-          echo "=== BUILD LOG ==="
           cat build.log
           ls -lh packages/ || true
+
+      - name: Extract linker errors
+        if: failure()
+        run: |
+          echo "=== LINKER ERRORS ==="
+          grep -i "undefined\|Undefined\|symbol.*not found\|ld:.*error\|clang.*error" build.log || true
+          grep -i "undefined" build.log | head -n 20 | while read l; do echo "::error::$l"; done || true
+          echo "--- last 60 ---"
+          tail -n 60 build.log
+          tail -n 60 build.log | while IFS= read -r l; do echo "::error::$l"; done || true
+
+      - name: Post PR comment
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs=require('fs');
+            let b=''; try{b=fs.readFileSync('build.log','utf8')}catch(e){}
+            let out=b.split('\n').filter(l=>l.includes('Undefined')||l.includes('undefined')||l.includes('ld:')||l.includes('error:')).slice(-40).join('\n') || b.slice(-4000);
+            await github.rest.issues.createComment({owner:context.repo.owner, repo:context.repo.repo, issue_number:context.issue.number, body:'❌ **Linker error**\n```\n'+out+'\n```'});
 
       - name: Upload .deb artifact
         if: success()
@@ -65,31 +87,3 @@ jobs:
           name: CallRecorder-RootHide-deb
           path: packages/*.deb
           if-no-files-found: error
-
-      - name: Diagnostics on failure
-        if: failure()
-        run: |
-          echo "## Build failed" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -i "error" build.log | tail -n 100 >> $GITHUB_STEP_SUMMARY || tail -n 200 build.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "## Syntax" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat syntax.log >> $GITHUB_STEP_SUMMARY || true
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "::group::Errors"
-          grep -i "error" build.log | tail -n 20 | while IFS= read -r l; do echo "::error::$l"; done || true
-          tail -n 80 build.log | while IFS= read -r l; do echo "::error::$l"; done || true
-          echo "::endgroup::"
-
-      - name: Post PR comment with errors
-        if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs=require('fs');
-            let b=''; try{b=fs.readFileSync('build.log','utf8')}catch(e){b='no log'}
-            let s=''; try{s=fs.readFileSync('syntax.log','utf8')}catch(e){}
-            let tail=b.split('\n').filter(l=>l.toLowerCase().includes('error')).slice(-30).join('\n') || b.slice(-5000);
-            let body='❌ **Build failed**\n```\n'+tail+'\n```\n**Syntax**\n```\n'+s.slice(-2000)+'\n```';
-            github.rest.issues.createComment({owner:context.repo.owner, repo:context.repo.repo, issue_number:context.issue.number, body});
