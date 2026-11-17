@@ -14,6 +14,7 @@
 			<string>audiomxd</string>
 			<string>callservicesd</string>
 			<string>avconferenced</string>
+			<string>coreaudiod</string>
 		</array>
 	</dict>
 </dict>
