@@ -47,6 +47,10 @@ jobs:
           xcrun --sdk iphoneos clang -x objective-c -fsyntax-only -fobjc-arc -I$THEOS/include -I$THEOS/vendor/include -I. -Icallrecorderprefs -F$THEOS/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks callrecorderprefs/CRPRootListController.m 2>&1 | tee syntax.log || true
           cat syntax.log
           echo "=== END SYNTAX ==="
+          # Emit as annotations for API fetch
+          while IFS= read -r line; do echo "::warning::$line"; done < syntax.log
+          # Also check full build syntax via theos
+          echo "=== THEOS CHECK ==="
 
       - name: Build RootHide .deb package
         run: |
@@ -83,21 +87,5 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat syntax.log >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Post log as PR comment on failure
-        if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            let log = '';
-            try { log = fs.readFileSync('build.log','utf8'); } catch(e){ log = 'no log'; }
-            let syn = '';
-            try { syn = fs.readFileSync('syntax.log','utf8'); } catch(e){}
-            log = (syn + "\n---\n" + log).slice(-6000);
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: '❌ Build failed – syntax + last lines:\n```\n' + log + '\n```'
-            });
+          # Also emit build log tail as annotations
+          tail -n 100 build.log | while IFS= read -r line; do echo "::error::$line"; done || true
