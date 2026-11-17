@@ -14,7 +14,7 @@ include $(THEOS)/makefiles/common.mk
 BUNDLE_NAME = CallRecorderPrefs
 
 CallRecorderPrefs_FILES = CRPRootListController.m
-CallRecorderPrefs_FRAMEWORKS = UIKit Foundation AVFoundation CoreGraphics
+CallRecorderPrefs_FRAMEWORKS = UIKit Foundation AVFoundation CoreGraphics QuartzCore
 CallRecorderPrefs_PRIVATE_FRAMEWORKS = Preferences
 CallRecorderPrefs_LIBRARIES = roothide
 CallRecorderPrefs_INSTALL_PATH = /Library/PreferenceBundles
