@@ -170,7 +170,6 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
     // Card
     UIView *card=[[UIView alloc] initWithFrame:CGRectMake(16,12,w-32,128)];
     card.backgroundColor=[UIColor secondarySystemGroupedBackgroundColor];
-    card.layer.cornerRadius=20; card.layer.cornerCurve=kCACornerCurveContinuous;
     card.layer.shadowColor=[UIColor blackColor].CGColor; card.layer.shadowOpacity=0.06; card.layer.shadowRadius=10; card.layer.shadowOffset=CGSizeMake(0,4);
     [container addSubview:card];
 
@@ -227,6 +226,8 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title=@"مسجل المكالمات";
+    self.navigationController.navigationBar.prefersLargeTitles=YES;
+    self.navigationItem.largeTitleDisplayMode=UINavigationItemLargeTitleDisplayModeAlways;
     gWeakPrefsController=self;
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, CRPPrefsPongCallback, CRP_PREFS_PONG_NOTIFICATION, NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
     UIBarButtonItem *refresh=[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.clockwise"] style:UIBarButtonItemStylePlain target:self action:@selector(loadRecordings)];
