@@ -44,12 +44,31 @@ jobs:
       - name: Build RootHide .deb package
         run: |
           chmod 0755 layout/DEBIAN/postinst
-          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide messages=yes
-          ls -lh packages/
+          set -o pipefail
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide messages=yes 2>&1 | tee build.log
+          echo "=== BUILD LOG ==="
+          cat build.log
+          ls -lh packages/ || true
 
       - name: Upload .deb artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: CallRecorder-RootHide-deb
           path: packages/*.deb
           if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
+      - name: Show log in summary on failure
+        if: failure()
+        run: |
+          echo "## Build failed – log tail" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 build.log >> $GITHUB_STEP_SUMMARY || cat build.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
