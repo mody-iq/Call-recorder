@@ -10,12 +10,6 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
-  checks: write
-
 jobs:
   build:
     runs-on: macos-latest
@@ -50,36 +44,10 @@ jobs:
       - name: Build RootHide .deb package
         run: |
           chmod 0755 layout/DEBIAN/postinst
-          set -o pipefail
-          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide messages=yes 2>&1 | tee build.log
-          cat build.log | grep -A 10 "Undefined symbols" || true
-          ls -lh packages/ || true
-
-      - name: Diagnostics
-        if: failure()
-        run: |
-          echo "=== FULL undefined context ==="
-          grep -n "Undefined" build.log || true
-          grep -A 12 "Undefined symbols" build.log || true
-          echo "--- last 120 ---"
-          tail -n 120 build.log
-          # emit as errors
-          grep -A 8 "Undefined symbols" build.log | while read l; do echo "::error::$l"; done || true
-          tail -n 80 build.log | while read l; do echo "::error::$l"; done || true
-
-      - name: Post PR comment
-        if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs=require('fs');
-            let b=''; try{b=fs.readFileSync('build.log','utf8')}catch(e){}
-            let u=''; try{const m=b.match(/Undefined symbols[\s\S]{0,800}/); u=m?m[0]:''}catch(e){}
-            let tail=b.slice(-5000);
-            await github.rest.issues.createComment({owner:context.repo.owner, repo:context.repo.repo, issue_number:context.issue.number, body:'❌ **Linker**\n```\n'+u+'\n---\n'+tail.slice(-2500)+'\n```'});
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide messages=yes
+          ls -lh packages/
 
       - name: Upload .deb artifact
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: CallRecorder-RootHide-deb
