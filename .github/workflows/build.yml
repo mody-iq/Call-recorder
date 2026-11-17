@@ -44,40 +44,12 @@ jobs:
       - name: Build RootHide .deb package
         run: |
           chmod 0755 layout/DEBIAN/postinst
-          set -o pipefail
-          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide messages=yes 2>&1 | tee build.log
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide messages=yes
           ls -lh packages/
 
       - name: Upload .deb artifact
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: CallRecorder-RootHide-deb
           path: packages/*.deb
-          if-no-files-found: warn
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build.log
-          if-no-files-found: warn
-
-      - name: Post build log to summary
-        if: always()
-        run: |
-          echo "## Build Log" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat build.log | head -n 300 >> $GITHUB_STEP_SUMMARY || echo "no log" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Annotate build failure
-        if: failure()
-        run: |
-          LOG=$(cat build.log | grep -E "error:|Error|warning:" | head -n 40 | tr '\n' '|' | cut -c1-900)
-          if [ -z "$LOG" ]; then LOG=$(cat build.log | head -n 20 | tr '\n' '|' | cut -c1-900); fi
-          echo "::error::Build failed: $LOG"
-          # Also full log as notice (truncated)
-          FULL=$(cat build.log | head -n 60 | tr '\n' ';' | cut -c1-900)
-          echo "::notice::Full log start: $FULL"
+          if-no-files-found: error
