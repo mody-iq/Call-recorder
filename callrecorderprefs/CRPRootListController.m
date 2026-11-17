@@ -42,7 +42,7 @@ static uint32_t CRPGetPayloadSize(NSString *path) {
 
 @interface CRPRootListController ()
 @property (nonatomic, strong) UITableView *tableView;
-@property (nonatomic, strong) UIVisualEffectView *playerBar;
+@property (nonatomic, strong) UIView *playerBar;
 @property (nonatomic, strong) UILabel *nowPlayingLabel;
 @property (nonatomic, strong) UILabel *currentTimeLabel;
 @property (nonatomic, strong) UILabel *durationLabel;
@@ -53,7 +53,6 @@ static uint32_t CRPGetPayloadSize(NSString *path) {
 @property (nonatomic, strong) AVAudioPlayer *audioPlayer;
 @property (nonatomic, copy) NSString *currentlyPlayingPath;
 @property (nonatomic, assign) NSInteger pongCount;
-@property (nonatomic, strong) UIView *emptyView;
 @end
 
 static __weak CRPRootListController *gWeakPrefsController=nil;
@@ -76,150 +75,75 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
 }
 - (NSUserDefaults *)prefs { return [[NSUserDefaults alloc] initWithSuiteName:CRP_SUITE] ?: [NSUserDefaults standardUserDefaults]; }
 
-#pragma mark - View lifecycle (smooth, auto-layout)
-
 - (void)loadView {
     [super loadView];
     self.view.backgroundColor=[UIColor systemGroupedBackgroundColor];
-
-    // Table
-    UITableView *tv=[[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
-    tv.translatesAutoresizingMaskIntoConstraints=NO;
+    UITableView *tv=[[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
+    tv.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
     tv.delegate=self; tv.dataSource=self; tv.allowsSelection=YES;
-    tv.estimatedRowHeight=66; tv.rowHeight=UITableViewAutomaticDimension;
-    tv.keyboardDismissMode=UIScrollViewKeyboardDismissModeOnDrag;
-    [self.view addSubview:tv];
-    self.tableView=tv;
-    [NSLayoutConstraint activateConstraints:@[
-        [tv.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [tv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [tv.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [tv.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-    ]];
+    self.tableView=tv; [self.view addSubview:tv];
 
-    // Empty state view (hidden by default)
-    UIView *ev=[[UIView alloc] init]; ev.hidden=YES; ev.translatesAutoresizingMaskIntoConstraints=NO;
-    UIImageView *evIcon=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"phone.badge.checkmark"]];
-    evIcon.tintColor=[UIColor systemGray2Color]; evIcon.translatesAutoresizingMaskIntoConstraints=NO; evIcon.contentMode=UIViewContentModeScaleAspectFit;
-    evIcon.preferredSymbolConfiguration=[UIImageSymbolConfiguration configurationWithPointSize:48 weight:UIImageSymbolWeightLight];
-    UILabel *evTitle=[[UILabel alloc] init]; evTitle.text=@"لا توجد تسجيلات بعد"; evTitle.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold]; evTitle.textColor=[UIColor secondaryLabelColor]; evTitle.textAlignment=NSTextAlignmentCenter; evTitle.translatesAutoresizingMaskIntoConstraints=NO;
-    UILabel *evSub=[[UILabel alloc] init]; evSub.text=@"ابدأ مكالمة واضغط زر التسجيل الأحمر داخل شاشة المكالمة"; evSub.font=[UIFont systemFontOfSize:13 weight:UIFontWeightRegular]; evSub.textColor=[UIColor tertiaryLabelColor]; evSub.textAlignment=NSTextAlignmentCenter; evSub.numberOfLines=0; evSub.translatesAutoresizingMaskIntoConstraints=NO;
-    [ev addSubview:evIcon]; [ev addSubview:evTitle]; [ev addSubview:evSub];
-    [NSLayoutConstraint activateConstraints:@[
-        [evIcon.centerXAnchor constraintEqualToAnchor:ev.centerXAnchor], [evIcon.topAnchor constraintEqualToAnchor:ev.topAnchor constant:32], [evIcon.widthAnchor constraintEqualToConstant:64], [evIcon.heightAnchor constraintEqualToConstant:64],
-        [evTitle.topAnchor constraintEqualToAnchor:evIcon.bottomAnchor constant:14], [evTitle.leadingAnchor constraintEqualToAnchor:ev.leadingAnchor constant:24], [evTitle.trailingAnchor constraintEqualToAnchor:ev.trailingAnchor constant:-24],
-        [evSub.topAnchor constraintEqualToAnchor:evTitle.bottomAnchor constant:6], [evSub.leadingAnchor constraintEqualToAnchor:ev.leadingAnchor constant:24], [evSub.trailingAnchor constraintEqualToAnchor:ev.trailingAnchor constant:-24],
-    ]];
-    self.emptyView=ev;
+    // شريط التشغيل السفلي - تصميم بسيط وواضح
+    CGFloat barH=120;
+    UIView *bar=[[UIView alloc] initWithFrame:CGRectMake(0, self.view.bounds.size.height-barH, self.view.bounds.size.width, barH)];
+    bar.backgroundColor=[UIColor secondarySystemGroupedBackgroundColor];
+    bar.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleTopMargin;
+    bar.layer.shadowColor=[UIColor blackColor].CGColor; bar.layer.shadowOpacity=0.12; bar.layer.shadowRadius=8; bar.layer.shadowOffset=CGSizeMake(0,-2);
+    bar.layer.cornerRadius=16; bar.layer.maskedCorners=kCALayerMinXMinYCorner|kCALayerMaxXMinYCorner; bar.clipsToBounds=NO; bar.hidden=YES;
+    self.playerBar=bar;
 
-    // Player bar – blur + controls (smooth)
-    UIVisualEffectView *bar=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
-    bar.translatesAutoresizingMaskIntoConstraints=NO; bar.hidden=YES; bar.layer.cornerRadius=16; bar.layer.maskedCorners=kCALayerMinXMinYCorner|kCALayerMaxXMinYCorner; bar.clipsToBounds=YES;
-    bar.layer.shadowColor=[UIColor blackColor].CGColor; bar.layer.shadowOpacity=0.08; bar.layer.shadowRadius=10; bar.layer.shadowOffset=CGSizeMake(0,-3);
-    [self.view addSubview:bar]; self.playerBar=bar;
+    UILabel *nowLabel=[[UILabel alloc] initWithFrame:CGRectMake(12, 10, bar.bounds.size.width-24, 16)];
+    nowLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightBold]; nowLabel.textColor=[UIColor labelColor]; nowLabel.textAlignment=NSTextAlignmentCenter; nowLabel.text=@"لم يتم اختيار تسجيل";
+    nowLabel.autoresizingMask=UIViewAutoresizingFlexibleWidth; [bar addSubview:nowLabel]; self.nowPlayingLabel=nowLabel;
 
-    // Content inside bar
-    UIView *content=bar.contentView;
-    UILabel *nowLabel=[[UILabel alloc] init]; nowLabel.translatesAutoresizingMaskIntoConstraints=NO; nowLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold]; nowLabel.textColor=[UIColor labelColor]; nowLabel.textAlignment=NSTextAlignmentCenter; nowLabel.text=@"لم يتم اختيار تسجيل"; nowLabel.numberOfLines=1;
-    UISlider *slider=[[UISlider alloc] init]; slider.translatesAutoresizingMaskIntoConstraints=NO; slider.minimumTrackTintColor=[UIColor systemBlueColor];
+    UISlider *slider=[[UISlider alloc] initWithFrame:CGRectMake(50, 34, bar.bounds.size.width-100, 20)];
+    slider.autoresizingMask=UIViewAutoresizingFlexibleWidth; slider.minimumTrackTintColor=[UIColor systemBlueColor];
     [slider addTarget:self action:@selector(sliderDragging:) forControlEvents:UIControlEventValueChanged];
-    [slider addTarget:self action:@selector(sliderReleased:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchUpOutside];
-    UILabel *cur=[[UILabel alloc] init]; cur.translatesAutoresizingMaskIntoConstraints=NO; cur.font=[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium]; cur.textColor=[UIColor secondaryLabelColor]; cur.text=@"00:00";
-    UILabel *dur=[[UILabel alloc] init]; dur.translatesAutoresizingMaskIntoConstraints=NO; dur.font=[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium]; dur.textColor=[UIColor secondaryLabelColor]; dur.textAlignment=NSTextAlignmentRight; dur.text=@"00:00";
-    UIButton *playBtn=[UIButton buttonWithType:UIButtonTypeSystem]; playBtn.translatesAutoresizingMaskIntoConstraints=NO; playBtn.backgroundColor=[UIColor systemBlueColor]; playBtn.tintColor=[UIColor whiteColor]; playBtn.layer.cornerRadius=22;
-    [playBtn setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal]; [playBtn addTarget:self action:@selector(togglePlayPause) forControlEvents:UIControlEventTouchUpInside];
-    UIButton *share=[UIButton buttonWithType:UIButtonTypeSystem]; share.translatesAutoresizingMaskIntoConstraints=NO; [share setImage:[UIImage systemImageNamed:@"square.and.arrow.up"] forState:UIControlStateNormal]; [share addTarget:self action:@selector(playerShareTapped) forControlEvents:UIControlEventTouchUpInside];
-    UIButton *del=[UIButton buttonWithType:UIButtonTypeSystem]; del.translatesAutoresizingMaskIntoConstraints=NO; del.tintColor=[UIColor systemRedColor]; [del setImage:[UIImage systemImageNamed:@"trash"] forState:UIControlStateNormal]; [del addTarget:self action:@selector(playerDeleteTapped) forControlEvents:UIControlEventTouchUpInside];
-    [content addSubview:nowLabel]; [content addSubview:slider]; [content addSubview:cur]; [content addSubview:dur]; [content addSubview:playBtn]; [content addSubview:share]; [content addSubview:del];
-    self.nowPlayingLabel=nowLabel; self.progressSlider=slider; self.currentTimeLabel=cur; self.durationLabel=dur; self.playPauseBtn=playBtn;
+    [slider addTarget:self action:@selector(sliderReleased:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside];
+    [bar addSubview:slider]; self.progressSlider=slider;
 
-    // Layout
-    [NSLayoutConstraint activateConstraints:@[
-        [bar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [bar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [bar.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [bar.heightAnchor constraintEqualToConstant:116],
-        [nowLabel.topAnchor constraintEqualToAnchor:content.topAnchor constant:10],
-        [nowLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:16],
-        [nowLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-16],
-        [cur.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:16],
-        [cur.centerYAnchor constraintEqualToAnchor:slider.centerYAnchor],
-        [cur.widthAnchor constraintEqualToConstant:40],
-        [dur.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-16],
-        [dur.centerYAnchor constraintEqualToAnchor:slider.centerYAnchor],
-        [dur.widthAnchor constraintEqualToConstant:40],
-        [slider.topAnchor constraintEqualToAnchor:nowLabel.bottomAnchor constant:6],
-        [slider.leadingAnchor constraintEqualToAnchor:cur.trailingAnchor constant:8],
-        [slider.trailingAnchor constraintEqualToAnchor:dur.leadingAnchor constant:-8],
-        [playBtn.topAnchor constraintEqualToAnchor:slider.bottomAnchor constant:10],
-        [playBtn.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
-        [playBtn.widthAnchor constraintEqualToConstant:44], [playBtn.heightAnchor constraintEqualToConstant:44],
-        [share.centerYAnchor constraintEqualToAnchor:playBtn.centerYAnchor],
-        [share.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:28],
-        [share.widthAnchor constraintEqualToConstant:32], [share.heightAnchor constraintEqualToConstant:32],
-        [del.centerYAnchor constraintEqualToAnchor:playBtn.centerYAnchor],
-        [del.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-28],
-        [del.widthAnchor constraintEqualToConstant:32], [del.heightAnchor constraintEqualToConstant:32],
-    ]];
+    UILabel *cur=[[UILabel alloc] initWithFrame:CGRectMake(12, 34, 36, 20)]; cur.font=[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium]; cur.textColor=[UIColor secondaryLabelColor]; cur.text=@"00:00"; [bar addSubview:cur]; self.currentTimeLabel=cur;
+    UILabel *dur=[[UILabel alloc] initWithFrame:CGRectMake(bar.bounds.size.width-48, 34, 36, 20)]; dur.font=[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium]; dur.textColor=[UIColor secondaryLabelColor]; dur.textAlignment=NSTextAlignmentRight; dur.text=@"00:00"; dur.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin; [bar addSubview:dur]; self.durationLabel=dur;
+
+    UIButton *playBtn=[UIButton buttonWithType:UIButtonTypeSystem]; playBtn.frame=CGRectMake(bar.bounds.size.width/2-24, 62, 48, 48); playBtn.layer.cornerRadius=24; playBtn.backgroundColor=[UIColor systemBlueColor]; playBtn.tintColor=[UIColor whiteColor]; playBtn.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin|UIViewAutoresizingFlexibleRightMargin;
+    [playBtn setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal]; [playBtn addTarget:self action:@selector(togglePlayPause) forControlEvents:UIControlEventTouchUpInside]; [bar addSubview:playBtn]; self.playPauseBtn=playBtn;
+
+    UIButton *share=[UIButton buttonWithType:UIButtonTypeSystem]; share.frame=CGRectMake(24, 68, 36, 36); [share setImage:[UIImage systemImageNamed:@"square.and.arrow.up"] forState:UIControlStateNormal]; [share addTarget:self action:@selector(playerShareTapped) forControlEvents:UIControlEventTouchUpInside]; [bar addSubview:share];
+    UIButton *del=[UIButton buttonWithType:UIButtonTypeSystem]; del.frame=CGRectMake(bar.bounds.size.width-60, 68, 36, 36); del.tintColor=[UIColor systemRedColor]; [del setImage:[UIImage systemImageNamed:@"trash"] forState:UIControlStateNormal]; [del addTarget:self action:@selector(playerDeleteTapped) forControlEvents:UIControlEventTouchUpInside]; [bar addSubview:del];
+
+    [self.view addSubview:bar];
 }
 
 - (UIView *)buildHeaderView {
-    CGFloat w = self.tableView.bounds.size.width;
-    if (w < 100) w = UIScreen.mainScreen.bounds.size.width;
-    UIView *container=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,150)];
-    // Card
-    UIView *card=[[UIView alloc] initWithFrame:CGRectMake(16,12,w-32,128)];
+    UIView *container=[[UIView alloc] initWithFrame:CGRectMake(0,0,self.tableView.bounds.size.width,140)];
+    UIView *card=[[UIView alloc] initWithFrame:CGRectMake(16,12,container.bounds.size.width-32,116)];
     card.backgroundColor=[UIColor secondarySystemGroupedBackgroundColor];
-    card.layer.cornerRadius=20; card.layer.cornerCurve=kCACornerCurveContinuous;
-    card.layer.shadowColor=[UIColor blackColor].CGColor; card.layer.shadowOpacity=0.06; card.layer.shadowRadius=10; card.layer.shadowOffset=CGSizeMake(0,4);
+    card.layer.cornerRadius=16; card.layer.shadowColor=[UIColor blackColor].CGColor; card.layer.shadowOpacity=0.07; card.layer.shadowRadius=6; card.layer.shadowOffset=CGSizeMake(0,2);
     [container addSubview:card];
 
-    // Icon + title row
-    UIImageView *icon=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"waveform.circle.fill"]];
-    icon.tintColor=[UIColor systemBlueColor]; icon.frame=CGRectMake(14,14,30,30);
-    icon.preferredSymbolConfiguration=[UIImageSymbolConfiguration configurationWithPointSize:28 weight:UIImageSymbolWeightRegular];
-    [card addSubview:icon];
-    UILabel *title=[[UILabel alloc] initWithFrame:CGRectMake(50,14, w-120,20)];
-    title.text=@"مسجل المكالمات"; title.font=[UIFont systemFontOfSize:16 weight:UIFontWeightBold]; title.textColor=[UIColor labelColor];
-    [card addSubview:title];
-    UILabel *subtitle=[[UILabel alloc] initWithFrame:CGRectMake(50,34, w-120,13)];
-    subtitle.text=@"تسجيل تلقائي نقي — بدون سبيكر"; subtitle.font=[UIFont systemFontOfSize:11 weight:UIFontWeightMedium]; subtitle.textColor=[UIColor secondaryLabelColor];
-    [card addSubview:subtitle];
+    UIImageView *icon=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"phone.fill.badge.checkmark"]];
+    icon.tintColor=[UIColor systemGreenColor]; icon.frame=CGRectMake(12,12,24,24); [card addSubview:icon];
+    UILabel *title=[[UILabel alloc] initWithFrame:CGRectMake(44,12,200,18)]; title.text=@"مسجل المكالمات برو"; title.font=[UIFont systemFontOfSize:15 weight:UIFontWeightBold]; title.textColor=[UIColor labelColor]; [card addSubview:title];
+    UILabel *subtitle=[[UILabel alloc] initWithFrame:CGRectMake(44,30,200,12)]; subtitle.text=@"تسجيل واضح بدون سبيكر • HQ"; subtitle.font=[UIFont systemFontOfSize:10 weight:UIFontWeightMedium]; subtitle.textColor=[UIColor secondaryLabelColor]; [card addSubview:subtitle];
 
-    // Status pill
-    BOOL active = self.pongCount>0;
-    NSString *txt = active ? @"نشط" : @"بانتظار الخدمة";
-    UIColor *pillColor = active ? [UIColor systemGreenColor] : [UIColor systemOrangeColor];
-    UIView *pill=[[UIView alloc] initWithFrame:CGRectMake(card.bounds.size.width-70,16,58,22)];
-    pill.backgroundColor=[pillColor colorWithAlphaComponent:0.12]; pill.layer.cornerRadius=11; pill.clipsToBounds=YES;
-    UIView *dot=[[UIView alloc] initWithFrame:CGRectMake(8,7,8,8)]; dot.backgroundColor=pillColor; dot.layer.cornerRadius=4;
-    [pill addSubview:dot];
-    UILabel *pillLab=[[UILabel alloc] initWithFrame:CGRectMake(20,0,34,22)]; pillLab.text=txt; pillLab.font=[UIFont systemFontOfSize:10 weight:UIFontWeightBold]; pillLab.textColor=pillColor; pillLab.textAlignment=NSTextAlignmentCenter;
-    [pill addSubview:pillLab]; [card addSubview:pill];
-    if (!active) {
-        CABasicAnimation *a=[CABasicAnimation animationWithKeyPath:@"opacity"]; a.fromValue=@1; a.toValue=@0.3; a.duration=0.9; a.autoreverses=YES; a.repeatCount=HUGE_VALF;
-        [dot.layer addAnimation:a forKey:@"pulse"];
-    }
+    NSString *daemonText=self.pongCount>0 ? [NSString stringWithFormat:@"● نشط (%ld)",(long)self.pongCount] : @"○ انتظار";
+    UILabel *state=[[UILabel alloc] initWithFrame:CGRectMake(card.bounds.size.width-100,14,88,14)]; state.text=daemonText; state.font=[UIFont systemFontOfSize:10 weight:UIFontWeightBold]; state.textAlignment=NSTextAlignmentRight; state.textColor=self.pongCount>0?[UIColor systemGreenColor]:[UIColor systemOrangeColor]; [card addSubview:state];
 
-    // Stats row – 3 boxes
     NSUInteger totalCount=self.recordings.count; NSTimeInterval totalDur=0; unsigned long long totalSize=0;
     for (CRPRecordingItem *it in self.recordings) { totalDur+=it.duration; totalSize+=it.fileSize; }
-    NSString *sizeStr= totalSize >= 1024*1024 ? [NSString stringWithFormat:@"%.1f ميجا",(double)totalSize/(1024*1024)] : (totalSize>0?[NSString stringWithFormat:@"%.0f كيلو",(double)totalSize/1024]:@"—");
-    NSString *durStr= totalDur>0 ? [NSString stringWithFormat:@"%02ld:%02ld",(long)(totalDur/60),(long)((NSInteger)totalDur%60)] : @"—";
+    NSString *sizeStr= totalSize >= 1024*1024 ? [NSString stringWithFormat:@"%.1f ميجا",(double)totalSize/(1024*1024)] : [NSString stringWithFormat:@"%.0f كيلو",(double)totalSize/1024];
+    NSString *durStr=[NSString stringWithFormat:@"%02ld:%02ld",(long)(totalDur/60),(long)((NSInteger)totalDur%60)];
 
     NSArray *stats=@[
-        @{@"v": [NSString stringWithFormat:@"%lu",(unsigned long)totalCount], @"l": @"التسجيلات", @"i": @"number"},
-        @{@"v": durStr, @"l": @"المدة", @"i": @"clock"},
-        @{@"v": sizeStr, @"l": @"الحجم", @"i": @"internaldrive"},
+        @{@"value": [NSString stringWithFormat:@"%lu",(unsigned long)totalCount], @"label": @"التسجيلات"},
+        @{@"value": durStr, @"label": @"الوقت الكلي"},
+        @{@"value": sizeStr, @"label": @"التخزين"}
     ];
-    CGFloat boxW=(card.bounds.size.width-32)/3.0;
     for (int i=0;i<3;i++) {
-        CGFloat x=8 + boxW*i + 4;
-        UIView *box=[[UIView alloc] initWithFrame:CGRectMake(x,64,boxW-8,52)];
-        box.backgroundColor=[UIColor tertiarySystemGroupedBackgroundColor]; box.layer.cornerRadius=12;
-        [card addSubview:box];
-        UILabel *v=[[UILabel alloc] initWithFrame:CGRectMake(0,10,box.bounds.size.width,18)]; v.text=stats[i][@"v"]; v.font=[UIFont systemFontOfSize:15 weight:UIFontWeightBold]; v.textAlignment=NSTextAlignmentCenter; v.textColor=[UIColor labelColor]; [box addSubview:v];
-        UILabel *l=[[UILabel alloc] initWithFrame:CGRectMake(0,30,box.bounds.size.width,14)]; l.text=stats[i][@"l"]; l.font=[UIFont systemFontOfSize:10 weight:UIFontWeightMedium]; l.textAlignment=NSTextAlignmentCenter; l.textColor=[UIColor secondaryLabelColor]; [box addSubview:l];
+        CGFloat w=(card.bounds.size.width-24)/3; CGFloat x=12 + w*i;
+        UILabel *val=[[UILabel alloc] initWithFrame:CGRectMake(x,58,w,20)]; val.text=stats[i][@"value"]; val.font=[UIFont systemFontOfSize:14 weight:UIFontWeightBold]; val.textAlignment=NSTextAlignmentCenter; val.textColor=[UIColor labelColor]; [card addSubview:val];
+        UILabel *lab=[[UILabel alloc] initWithFrame:CGRectMake(x,80,w,12)]; lab.text=stats[i][@"label"]; lab.font=[UIFont systemFontOfSize:10 weight:UIFontWeightMedium]; lab.textAlignment=NSTextAlignmentCenter; lab.textColor=[UIColor secondaryLabelColor]; [card addSubview:lab];
+        if (i<2) { UIView *sep=[[UIView alloc] initWithFrame:CGRectMake(x+w-0.5,60,0.5,26)]; sep.backgroundColor=[UIColor separatorColor]; [card addSubview:sep]; }
     }
     return container;
 }
@@ -227,25 +151,22 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title=@"مسجل المكالمات";
-    self.navigationController.navigationBar.prefersLargeTitles=YES;
-    self.navigationItem.largeTitleDisplayMode=UINavigationItemLargeTitleDisplayModeAlways;
     gWeakPrefsController=self;
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, CRPPrefsPongCallback, CRP_PREFS_PONG_NOTIFICATION, NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-    UIBarButtonItem *refresh=[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.clockwise"] style:UIBarButtonItemStylePlain target:self action:@selector(loadRecordings)];
-    UIBarButtonItem *more=[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] style:UIBarButtonItemStylePlain target:self action:@selector(showMoreMenu)];
-    self.navigationItem.rightBarButtonItems=@[more, refresh];
+    UIBarButtonItem *refresh=[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(loadRecordings)];
+    UIBarButtonItem *info=[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"info.circle"] style:UIBarButtonItemStylePlain target:self action:@selector(showDiagnostics)];
+    UIBarButtonItem *settings=[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"gearshape"] style:UIBarButtonItemStylePlain target:self action:@selector(showSettings)];
+    self.navigationItem.rightBarButtonItems=@[refresh, info, settings];
     self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"تعديل" style:UIBarButtonItemStylePlain target:self action:@selector(toggleEdit)];
     [self pingDaemons]; [self loadRecordings];
 }
 - (void)dealloc { CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, CRP_PREFS_PONG_NOTIFICATION, NULL); if (gWeakPrefsController==self) gWeakPrefsController=nil; [self stopPlayback]; }
 - (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self pingDaemons]; [self loadRecordings]; }
 - (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [self stopPlayback]; }
-- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; CGFloat inset = self.playerBar.hidden?0:116; self.tableView.contentInset=UIEdgeInsetsMake(0,0,inset,0); self.tableView.scrollIndicatorInsets=self.tableView.contentInset; }
+- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; CGFloat barH=120; self.playerBar.frame=CGRectMake(0, self.view.bounds.size.height-barH - self.view.safeAreaInsets.bottom, self.view.bounds.size.width, barH); self.tableView.contentInset=UIEdgeInsetsMake(0,0,self.playerBar.hidden?8:barH+8,0); }
 
 - (void)pingDaemons { self.pongCount=0; CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CRP_PREFS_PING_NOTIFICATION, NULL, NULL, true); dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.35*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{ [self.tableView reloadData]; }); }
-- (void)toggleEdit { BOOL ed=!self.tableView.isEditing; [self.tableView setEditing:ed animated:YES]; self.navigationItem.leftBarButtonItem.title=ed?@"تم":@"تعديل"; self.navigationItem.leftBarButtonItem.style=ed?UIBarButtonItemStyleDone:UIBarButtonItemStylePlain; }
-
-#pragma mark - Helpers
+- (void)toggleEdit { [self.tableView setEditing:!self.tableView.isEditing animated:YES]; self.navigationItem.leftBarButtonItem.title=self.tableView.isEditing?@"تم":@"تعديل"; }
 
 - (NSTimeInterval)readWavDurationAtPath:(NSString *)path fileSize:(unsigned long long)fileSize payload:(uint32_t)payload {
     if (payload==0) { if (fileSize>44) { AVAudioPlayer *tmp=[[AVAudioPlayer alloc] initWithContentsOfURL:[NSURL fileURLWithPath:path] error:nil]; if (tmp) return tmp.duration; } return 0; }
@@ -280,9 +201,11 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
             BOOL dup=NO; for (CRPRecordingItem *ex in self.recordings) if ([ex.fileName isEqualToString:file]) { dup=YES; break; } if (dup) continue;
             [seen addObject:fullPath];
             CRPRecordingItem *item=[[CRPRecordingItem alloc] init]; item.fileName=file; item.filePath=fullPath; item.creationDate=attrs[NSFileModificationDate]?: (attrs[NSFileCreationDate]?:[NSDate distantPast]); item.fileSize=size; item.payloadBytes=payload; item.duration=[self readWavDurationAtPath:fullPath fileSize:size payload:payload];
+            // اسم العرض: حاول استخراج اسم المتصل من JSON إن وجد
             NSString *jsonPath=[[fullPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"];
             if ([fm fileExistsAtPath:jsonPath]) { NSData *d=[NSData dataWithContentsOfFile:jsonPath]; NSDictionary *j=[NSJSONSerialization JSONObjectWithData:d options:0 error:nil]; if (j[@"handle"]) { NSString *h=j[@"handle"]; if (h.length && ![h isEqualToString:@"Unknown"]) item.displayName=h; } if (j[@"contact"] && [j[@"contact"] length]) item.displayName=j[@"contact"]; }
             if (!item.displayName.length) {
+                // من اسم الملف
                 NSArray *parts=[file componentsSeparatedByString:@"_"];
                 if (parts.count>=3) { NSString *maybe=parts[2]; maybe=[maybe stringByReplacingOccurrencesOfString:@".wav" withString:@""]; maybe=[maybe stringByReplacingOccurrencesOfString:@"-mediad" withString:@""]; if (maybe.length && ![maybe isEqualToString:@"Unknown"]) item.displayName=maybe; }
                 if (!item.displayName.length) item.displayName=file;
@@ -291,78 +214,50 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
         }
     }
     [self.recordings sortUsingComparator:^NSComparisonResult(CRPRecordingItem *a, CRPRecordingItem *b){ return [b.creationDate compare:a.creationDate]; }];
-    [self updateHeader];
-    [self.tableView reloadData];
-    // Empty state handling
-    if (self.recordings.count==0) {
-        self.tableView.backgroundView=self.emptyView; self.emptyView.hidden=NO;
-    } else {
-        self.tableView.backgroundView=nil; self.emptyView.hidden=YES;
-    }
+    [self.tableView reloadData]; [self updateHeader];
 }
 - (void)updateHeader { self.tableView.tableHeaderView=[self buildHeaderView]; }
 
-#pragma mark - Menus & Diagnostics (simple)
-
-- (void)showMoreMenu {
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    [a addAction:[UIAlertAction actionWithTitle:@"التشخيص" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ [self showDiagnostics]; }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"نصائح لصوت نقي" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ [self showTips]; }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"فتح مجلد التسجيلات" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
-        NSString *primary=[self candidateDirectories].firstObject?:@"/var/mobile/Library/CallRecordings";
-        UIPasteboard.generalPasteboard.string=primary;
-        UIAlertController *c=[UIAlertController alertControllerWithTitle:@"تم نسخ المسار" message:primary preferredStyle:UIAlertControllerStyleAlert];
-        [c addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:c animated:YES completion:nil];
-    }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"حذف كل التسجيلات" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x){ [self confirmDeleteAll]; }]];
-    [a addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
-    if (a.popoverPresentationController) { a.popoverPresentationController.sourceView=self.view; a.popoverPresentationController.sourceRect=CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2,1,1); }
-    [self presentViewController:a animated:YES completion:nil];
-}
-
+#pragma mark - التشخيص والإعدادات
 - (NSString *)collectReport {
-    NSMutableString *r=[NSMutableString string]; [r appendString:@"مسجل المكالمات v1.3.3 — 16kHz mono — تشخيص\n"];
-    [r appendFormat:@"الخدمات: %ld %@\n", (long)self.pongCount, self.pongCount>0?@"✅ نشطة":@"⚠️ غير نشطة - فعّل الحقن في RootHide"];
-    if (self.pongCount==0) [r appendString:@"→ الإعدادات > RootHide Manager > فعّل mediaserverd / audiomxd / callservicesd / avconferenced ثم Respring.\n"];
-    [r appendString:@"\nالتخزين:\n"]; NSFileManager *fm=[NSFileManager defaultManager];
-    for (NSString *dir in [self candidateDirectories]) { BOOL exists=[fm fileExistsAtPath:dir]; NSUInteger cnt=0; if (exists) { for (NSString *f in [fm contentsOfDirectoryAtPath:dir error:nil]) if ([f.pathExtension.lowercaseString isEqualToString:@"wav"]) cnt++; } [r appendFormat:@"• %@ [%@ • %lu ملف]\n", dir, exists?@"✓":@"—", (unsigned long)cnt]; }
-    [r appendFormat:@"\nالمسار الرئيسي: %@\n", [self candidateDirectories].firstObject?:@"NONE"];
-    [r appendString:@"\nالسجلات (آخر 4KB):\n"]; BOOL found=NO;
-    for (NSString *dir in [self candidateDirectories]) { NSString *logPath=[dir stringByAppendingPathComponent:@"diagnostics.log"]; if ([fm fileExistsAtPath:logPath]) { NSString *c=[NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil]; if (c.length) { found=YES; if (c.length>3800) c=[c substringFromIndex:c.length-3800]; [r appendFormat:@"[%@]\n%@\n", dir.lastPathComponent, c]; } } }
-    if (!found) [r appendString:@"لا توجد سجلات بعد — ابدأ مكالمة ثم اضغط تسجيل.\n"];
+    NSMutableString *r=[NSMutableString string]; [r appendString:@"مسجل المكالمات برو v1.3.1\n"];
+    [r appendFormat:@"الخدمات النشطة: %ld %@\n", (long)self.pongCount, self.pongCount>0?@"✅ نشطة":@"⚠️ انتظار"];
+    if (self.pongCount==0) [r appendString:@"نصيحة: فعّل حقن الأداة لـ audiomxd/mediaserverd/callservicesd في RootHide Manager ثم أعد تشغيل المستخدم.\n"];
+    [r appendString:@"\nأماكن التخزين:\n"]; NSFileManager *fm=[NSFileManager defaultManager];
+    for (NSString *dir in [self candidateDirectories]) { BOOL exists=[fm fileExistsAtPath:dir]; NSUInteger cnt=0; if (exists) { for (NSString *f in [fm contentsOfDirectoryAtPath:dir error:nil]) if ([f.pathExtension.lowercaseString isEqualToString:@"wav"]) cnt++; } [r appendFormat:@"%@ [%@ عدد=%lu]\n", dir, exists?@"موجود":@"غير موجود", (unsigned long)cnt]; }
+    [r appendFormat:@"\nالمسار الأساسي: %@\n", [self candidateDirectories].firstObject?:@"NONE"];
+    [r appendString:@"\nالسجلات:\n"]; BOOL found=NO;
+    for (NSString *dir in [self candidateDirectories]) { NSString *logPath=[dir stringByAppendingPathComponent:@"diagnostics.log"]; if ([fm fileExistsAtPath:logPath]) { NSString *c=[NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:nil]; if (c.length) { found=YES; if (c.length>3500) c=[c substringFromIndex:c.length-3500]; [r appendFormat:@"[%@]\n%@\n", dir.lastPathComponent, c]; } } }
+    if (!found) [r appendString:@"لا توجد سجلات بعد.\n"];
     return r;
 }
 - (void)showDiagnostics {
     [self pingDaemons];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.4*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{
         NSString *report=[self collectReport];
         UIAlertController *a=[UIAlertController alertControllerWithTitle:@"التشخيص" message:report preferredStyle:UIAlertControllerStyleAlert];
         [a addAction:[UIAlertAction actionWithTitle:@"نسخ" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ [UIPasteboard generalPasteboard].string=report; }]];
         [a addAction:[UIAlertAction actionWithTitle:@"مسح السجلات" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x){ for (NSString *dir in [self candidateDirectories]) [[NSFileManager defaultManager] removeItemAtPath:[dir stringByAppendingPathComponent:@"diagnostics.log"] error:nil]; }]];
-        [a addAction:[UIAlertAction actionWithTitle:@"إغلاق" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:a animated:YES completion:nil];
+        [a addAction:[UIAlertAction actionWithTitle:@"إغلاق" style:UIAlertActionStyleCancel handler:nil]]; [self presentViewController:a animated:YES completion:nil];
     });
 }
-- (void)showTips {
-    UIAlertController *t=[UIAlertController alertControllerWithTitle:@"للحصول على صوت نقي" message:@"• لا تحتاج فتح السبيكر — التسجيل يلتقط الطرفين مباشرة\n• تأكد من تفعيل الحقن لـ audiomxd + mediaserverd + callservicesd في RootHide ثم Respring\n• بعد التثبيت اعمل Respring\n• الميك ON/OFF لم يعد يؤثر — التسجيل الآن أحادي 16kHz نقي بدون تشويش" preferredStyle:UIAlertControllerStyleAlert];
-    [t addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:t animated:YES completion:nil];
-}
-- (void)confirmDeleteAll {
-    if (self.recordings.count==0) return;
-    UIAlertController *c=[UIAlertController alertControllerWithTitle:@"حذف كل التسجيلات؟" message:[NSString stringWithFormat:@"سيتم حذف %lu ملف نهائياً",(unsigned long)self.recordings.count] preferredStyle:UIAlertControllerStyleAlert];
-    [c addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
-    [c addAction:[UIAlertAction actionWithTitle:@"حذف الكل" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *y){ for (CRPRecordingItem *it in self.recordings) { [[NSFileManager defaultManager] removeItemAtPath:it.filePath error:nil]; NSString *json=[[it.filePath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; [[NSFileManager defaultManager] removeItemAtPath:json error:nil]; } [self loadRecordings]; [self hidePlayer]; }]];
-    [self presentViewController:c animated:YES completion:nil];
+- (void)showSettings {
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"إعدادات مسجل المكالمات" message:@"التسجيل يعمل تلقائياً بدون الحاجة للسبيكر. الصوت يتم تضخيمه تلقائياً بوضوح.\n\n• تضخيم الصوت: يكبّر صوت الطرف البعيد تلقائياً\n• التخزين: يتم حفظ التسجيلات في المسار الأساسي\n• الحذف: اسحب التسجيل لليسار للحذف أو المشاركة" preferredStyle:UIAlertControllerStyleActionSheet];
+    BOOL gainOn=[[self prefs] boolForKey:@"CRPHQGainEnabled"]; if (![[self prefs] objectForKey:@"CRPHQGainEnabled"]) gainOn=YES;
+    [a addAction:[UIAlertAction actionWithTitle:gainOn?@"إيقاف تضخيم الصوت":@"تفعيل تضخيم الصوت (مستحسن)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ [[self prefs] setBool:!gainOn forKey:@"CRPHQGainEnabled"]; [[self prefs] synchronize]; [self.tableView reloadData]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"فتح مجلد التسجيلات في Filza" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ NSString *primary=[self candidateDirectories].firstObject?:@"/var/mobile/Library/CallRecordings"; UIPasteboard.generalPasteboard.string=primary; UIAlertController *c=[UIAlertController alertControllerWithTitle:@"تم النسخ" message:primary preferredStyle:UIAlertControllerStyleAlert]; [c addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]]; [self presentViewController:c animated:YES completion:nil]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"حذف جميع التسجيلات" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x){ UIAlertController *confirm=[UIAlertController alertControllerWithTitle:@"حذف الكل؟" message:@"سيتم حذف جميع ملفات التسجيل نهائياً" preferredStyle:UIAlertControllerStyleAlert]; [confirm addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]]; [confirm addAction:[UIAlertAction actionWithTitle:@"حذف الكل" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *y){ for (CRPRecordingItem *it in self.recordings) [[NSFileManager defaultManager] removeItemAtPath:it.filePath error:nil]; [self loadRecordings]; [self hidePlayer]; }]]; [self presentViewController:confirm animated:YES completion:nil]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"نصائح للحصول على صوت نقي" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ UIAlertController *tips=[UIAlertController alertControllerWithTitle:@"نصائح" message:@"1. لا تحتاج لفتح السبيكر — التسجيل يلتقط الطرفين مباشرة.\n2. تأكد من تفعيل الحقن لـ audiomxd و mediaserverd و callservicesd في RootHide Manager ثم أعد تشغيل المستخدم.\n3. بعد التثبيت، افعل إعادة تشغيل المستخدم.\n4. تسجيل بلا صوت (19MB صمت) يعني الخدمات لم تكن نشطة — انظر التشخيص." preferredStyle:UIAlertControllerStyleAlert]; [tips addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]]; [self presentViewController:tips animated:YES completion:nil]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"إغلاق" style:UIAlertActionStyleCancel handler:nil]];
+    if (a.popoverPresentationController) { a.popoverPresentationController.sourceView=self.view; a.popoverPresentationController.sourceRect=CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1); }
+    [self presentViewController:a animated:YES completion:nil];
 }
 
-#pragma mark - Playback (smooth)
-
+#pragma mark - التشغيل
 - (void)stopPlayback { if (self.progressTimer) { [self.progressTimer invalidate]; self.progressTimer=nil; } if (self.audioPlayer.isPlaying) [self.audioPlayer stop]; self.audioPlayer=nil; self.currentlyPlayingPath=nil; [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil]; [self.playPauseBtn setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal]; [self.tableView reloadData]; }
-- (void)hidePlayer { if (self.playerBar.hidden) return; [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{ self.playerBar.alpha=0; } completion:^(BOOL f){ self.playerBar.hidden=YES; self.playerBar.alpha=1; [self.view setNeedsLayout]; [self.view layoutIfNeeded]; }]; [self stopPlayback]; }
+- (void)hidePlayer { [UIView animateWithDuration:0.25 animations:^{ self.playerBar.alpha=0; } completion:^(BOOL f){ self.playerBar.hidden=YES; self.playerBar.alpha=1; [self.view setNeedsLayout]; }]; [self stopPlayback]; }
 - (void)showPlayerForItem:(CRPRecordingItem *)item {
-    self.playerBar.hidden=NO; self.playerBar.alpha=1; [self.view bringSubviewToFront:self.playerBar];
+    self.playerBar.hidden=NO; [self.view bringSubviewToFront:self.playerBar];
     self.nowPlayingLabel.text=[NSString stringWithFormat:@"%@ • %@", item.displayName ?: item.fileName, [self formattedDuration:item.duration]];
     self.durationLabel.text=[self formattedDuration:item.duration]; self.currentTimeLabel.text=@"00:00"; self.progressSlider.value=0;
     [self.view setNeedsLayout];
@@ -374,7 +269,7 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
     AVAudioSession *session=[AVAudioSession sharedInstance]; [session setCategory:AVAudioSessionCategoryPlayback error:nil]; [session setActive:YES error:nil];
     NSURL *url=[NSURL fileURLWithPath:path]; NSError *err=nil;
     self.audioPlayer=[[AVAudioPlayer alloc] initWithContentsOfURL:url error:&err];
-    if (!self.audioPlayer || err) { UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"تعذر التشغيل" message:err.localizedDescription?:@"الملف تالف" preferredStyle:UIAlertControllerStyleAlert]; [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]]; [self presentViewController:alert animated:YES completion:nil]; return; }
+    if (!self.audioPlayer || err) { UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"خطأ في التشغيل" message:err.localizedDescription?:@"تعذر تشغيل التسجيل" preferredStyle:UIAlertControllerStyleAlert]; [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]]; [self presentViewController:alert animated:YES completion:nil]; return; }
     self.audioPlayer.delegate=self; [self.audioPlayer prepareToPlay];
     if ([self.audioPlayer play]) {
         self.currentlyPlayingPath=path; [self showPlayerForItem:item];
@@ -403,46 +298,49 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
 - (NSString *)formattedSize:(unsigned long long)bytes { if (bytes>=1024*1024) return [NSString stringWithFormat:@"%.1f ميجا",(double)bytes/(1024.0*1024)]; return [NSString stringWithFormat:@"%.0f كيلو",(double)bytes/1024.0]; }
 - (NSString *)formattedDuration:(NSTimeInterval)s { NSInteger t=(NSInteger)(s+0.5); return [NSString stringWithFormat:@"%02ld:%02ld",(long)(t/60),(long)(t%60)]; }
 
-#pragma mark - Table (clean, simple)
-
+#pragma mark - الجدول
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { if (section==0) return 1; return (NSInteger)self.recordings.count; }
-- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)section { return section==0?@"الإعدادات السريعة": (self.recordings.count>0? [NSString stringWithFormat:@"التسجيلات — %lu",(unsigned long)self.recordings.count] : @"التسجيلات"); }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { if (section==0) return 2; return (NSInteger)self.recordings.count; }
+- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)section { return section==0?@"الإعدادات": (self.recordings.count>0?[NSString stringWithFormat:@"التسجيلات (%lu)",(unsigned long)self.recordings.count]:@"لا توجد تسجيلات بعد"); }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)section {
-    if (section==0) return @"التسجيل يعمل تلقائياً بدون سبيكر. فعّل الحقن لـ audiomxd / mediaserverd / callservicesd في RootHide Manager ثم Respring.";
+    if (section==0) return @"التسجيل يعمل بدون سبيكر. فعّل الحقن لـ audiomxd و mediaserverd و callservicesd في RootHide Manager.";
     NSString *primary=[self candidateDirectories].firstObject?:@"/var/mobile/Library/CallRecordings";
-    return [NSString stringWithFormat:@"اضغط للتشغيل • اسحب لليسار للحذف أو المشاركة • اضغط مطولاً لإعادة التسمية\n%@", primary];
+    NSString *daemonState=self.pongCount>0?[NSString stringWithFormat:@"الخدمات نشطة (%ld) ✅",(long)self.pongCount]:@"الخدمات: انتظار";
+    return [NSString stringWithFormat:@"%@\nاضغط للتشغيل • اسحب لليسار للحذف/المشاركة • اضغط مطولاً لإعادة التسمية\n%@", daemonState, primary];
 }
+- (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip { return ip.section==0?44:66; }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.section==0) {
         static NSString *sid=@"SettingsCell"; UITableViewCell *cell=[tv dequeueReusableCellWithIdentifier:sid]; if (!cell) cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:sid];
-        cell.textLabel.text=@"تحسين الصوت التلقائي"; cell.textLabel.font=[UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-        cell.imageView.image=[UIImage systemImageNamed:@"waveform.path.ecg"]; cell.imageView.tintColor=[UIColor systemBlueColor];
-        UISwitch *sw=[[UISwitch alloc] init]; sw.on=[[self prefs] boolForKey:@"CRPHQGainEnabled"]; if (![[self prefs] objectForKey:@"CRPHQGainEnabled"]) sw.on=YES; sw.onTintColor=[UIColor systemBlueColor]; [sw addTarget:self action:@selector(gainSwitchChanged:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView=sw;
-        cell.detailTextLabel.text=sw.isOn?@"مفعّل":@"متوقف"; cell.selectionStyle=UITableViewCellSelectionStyleNone;
+        cell.accessoryType=UITableViewCellAccessoryNone; cell.selectionStyle=UITableViewCellSelectionStyleNone;
+        if (ip.row==0) {
+            cell.textLabel.text=@"تضخيم الصوت (AGC)"; cell.imageView.image=[UIImage systemImageNamed:@"waveform.path.badge.plus"]; cell.imageView.tintColor=[UIColor systemBlueColor];
+            UISwitch *sw=[[UISwitch alloc] init]; sw.on=[[self prefs] boolForKey:@"CRPHQGainEnabled"]; if (![[self prefs] objectForKey:@"CRPHQGainEnabled"]) sw.on=YES; sw.onTintColor=[UIColor systemBlueColor]; [sw addTarget:self action:@selector(gainSwitchChanged:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView=sw;
+            cell.detailTextLabel.text=sw.isOn?@"مفعل":@"متوقف";
+        } else {
+            cell.textLabel.text=@"جودة التسجيل"; cell.imageView.image=[UIImage systemImageNamed:@"music.note"]; cell.imageView.tintColor=[UIColor systemPurpleColor]; cell.detailTextLabel.text=@"HQ • 48kHz"; cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator; cell.accessoryView=nil;
+        }
         return cell;
     }
-    static NSString *kCell=@"RecCell";
+    static NSString *kCell=@"Cell";
     UITableViewCell *cell=[tv dequeueReusableCellWithIdentifier:kCell]; if (!cell) cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:kCell];
     CRPRecordingItem *item=self.recordings[ip.row]; BOOL isPlaying=[self.currentlyPlayingPath isEqualToString:item.filePath] && self.audioPlayer.isPlaying;
-    cell.imageView.image=isPlaying?[UIImage systemImageNamed:@"waveform"]:[UIImage systemImageNamed:@"phone.fill"];
-    cell.imageView.tintColor=isPlaying?[UIColor systemBlueColor]:[UIColor systemGreenColor];
+    cell.imageView.image=isPlaying?[UIImage systemImageNamed:@"waveform"]:[UIImage systemImageNamed:@"phone.fill"]; cell.imageView.tintColor=isPlaying?[UIColor systemBlueColor]:[UIColor systemGreenColor];
     NSString *title=item.displayName ?: item.fileName;
-    cell.textLabel.text= isPlaying? [NSString stringWithFormat:@"⏸ %@", title] : title;
-    cell.textLabel.font=[UIFont systemFontOfSize:14 weight:isPlaying?UIFontWeightBold:UIFontWeightSemibold]; cell.textLabel.textColor=isPlaying?[UIColor systemBlueColor]:[UIColor labelColor]; cell.textLabel.numberOfLines=1;
+    cell.textLabel.text= isPlaying? [NSString stringWithFormat:@"⏸ %@", title] : [NSString stringWithFormat:@"▶ %@", title];
+    cell.textLabel.font=[UIFont systemFontOfSize:13 weight:isPlaying?UIFontWeightBold:UIFontWeightSemibold]; cell.textLabel.textColor=isPlaying?[UIColor systemBlueColor]:[UIColor labelColor];
     NSDateFormatter *df=[[NSDateFormatter alloc] init]; df.dateStyle=NSDateFormatterShortStyle; df.timeStyle=NSDateFormatterShortStyle;
     NSString *dateStr=[df stringFromDate:item.creationDate];
     cell.detailTextLabel.text=[NSString stringWithFormat:@"%@ • %@ • %@", dateStr, [self formattedDuration:item.duration], [self formattedSize:item.fileSize]];
-    cell.detailTextLabel.textColor=[UIColor secondaryLabelColor]; cell.detailTextLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightRegular]; cell.detailTextLabel.numberOfLines=1;
-    cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
+    cell.detailTextLabel.textColor=[UIColor secondaryLabelColor]; cell.detailTextLabel.font=[UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     return cell;
 }
 - (void)gainSwitchChanged:(UISwitch *)sw { [[self prefs] setBool:sw.isOn forKey:@"CRPHQGainEnabled"]; [[self prefs] synchronize]; CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.relaxin.callrecorder/prefsChanged"), NULL, NULL, true); [self.tableView reloadData]; }
-- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip { [tv deselectRowAtIndexPath:ip animated:YES]; if (ip.section==0) return; CRPRecordingItem *item=self.recordings[ip.row]; [self playRecordingAtPath:item.filePath item:item]; }
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip { [tv deselectRowAtIndexPath:ip animated:YES]; if (ip.section==0) { if (ip.row==1) [self showSettings]; return; } CRPRecordingItem *item=self.recordings[ip.row]; [self playRecordingAtPath:item.filePath item:item]; }
 - (BOOL)tableView:(UITableView *)tv canEditRowAtIndexPath:(NSIndexPath *)ip { return ip.section==1; }
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tv editingStyleForRowAtIndexPath:(NSIndexPath *)ip { return ip.section==1?UITableViewCellEditingStyleDelete:UITableViewCellEditingStyleNone; }
 - (void)tableView:(UITableView *)tv commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)ip { if (style==UITableViewCellEditingStyleDelete && ip.section==1) [self deleteRecordingAtIndexPath:ip inTableView:tv]; }
-- (void)deleteRecordingAtIndexPath:(NSIndexPath *)ip inTableView:(UITableView *)tv { if (ip.section!=1 || ip.row<0 || ip.row>=(NSInteger)self.recordings.count) return; CRPRecordingItem *item=self.recordings[ip.row]; if ([self.currentlyPlayingPath isEqualToString:item.filePath]) [self hidePlayer]; [[NSFileManager defaultManager] removeItemAtPath:item.filePath error:nil]; NSString *json=[[item.filePath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; [[NSFileManager defaultManager] removeItemAtPath:json error:nil]; [self.recordings removeObjectAtIndex:ip.row]; [tv deleteRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationAutomatic]; [self updateHeader]; if (self.recordings.count==0) { self.tableView.backgroundView=self.emptyView; self.emptyView.hidden=NO; } }
+- (void)deleteRecordingAtIndexPath:(NSIndexPath *)ip inTableView:(UITableView *)tv { if (ip.section!=1 || ip.row<0 || ip.row>=(NSInteger)self.recordings.count) return; CRPRecordingItem *item=self.recordings[ip.row]; if ([self.currentlyPlayingPath isEqualToString:item.filePath]) [self hidePlayer]; [[NSFileManager defaultManager] removeItemAtPath:item.filePath error:nil]; NSString *json=[[item.filePath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; [[NSFileManager defaultManager] removeItemAtPath:json error:nil]; [self.recordings removeObjectAtIndex:ip.row]; [tv deleteRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationAutomatic]; [self updateHeader]; [tv reloadData]; }
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tv trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.section!=1) return nil; __weak typeof(self) weakSelf=self;
     UIContextualAction *del=[UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"حذف" handler:^(UIContextualAction *a, UIView *v, void(^c)(BOOL)){ [weakSelf deleteRecordingAtIndexPath:ip inTableView:tv]; c(YES); }]; del.image=[UIImage systemImageNamed:@"trash"];
@@ -450,5 +348,5 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
     UIContextualAction *rename=[UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:@"إعادة تسمية" handler:^(UIContextualAction *a, UIView *v, void(^c)(BOOL)){ [weakSelf renameRecordingAtIndexPath:ip]; c(YES); }]; rename.backgroundColor=[UIColor systemOrangeColor]; rename.image=[UIImage systemImageNamed:@"pencil"];
     return [UISwipeActionsConfiguration configurationWithActions:@[del, share, rename]];
 }
-- (void)renameRecordingAtIndexPath:(NSIndexPath *)ip { if (ip.section!=1) return; CRPRecordingItem *item=self.recordings[ip.row]; UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"إعادة تسمية" message:item.fileName preferredStyle:UIAlertControllerStyleAlert]; [alert addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text=[item.fileName stringByDeletingPathExtension]; tf.placeholder=@"الاسم الجديد"; }]; [alert addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]]; [alert addAction:[UIAlertAction actionWithTitle:@"حفظ" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ NSString *newName=[alert.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]; if (newName.length==0) return; if (![newName.pathExtension.lowercaseString isEqualToString:@"wav"]) newName=[newName stringByAppendingPathExtension:@"wav"]; NSString *newPath=[[item.filePath stringByDeletingLastPathComponent] stringByAppendingPathComponent:newName]; NSError *err=nil; [[NSFileManager defaultManager] moveItemAtPath:item.filePath toPath:newPath error:&err]; if (!err) { NSString *oldJson=[[item.filePath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; if ([[NSFileManager defaultManager] fileExistsAtPath:oldJson]) { NSString *newJson=[[newPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; [[NSFileManager defaultManager] moveItemAtPath:oldJson toPath:newJson error:nil]; } [self loadRecordings]; } }]]; [self presentViewController:alert animated:YES completion:nil]; }
+- (void)renameRecordingAtIndexPath:(NSIndexPath *)ip { if (ip.section!=1) return; CRPRecordingItem *item=self.recordings[ip.row]; UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"إعادة تسمية التسجيل" message:item.fileName preferredStyle:UIAlertControllerStyleAlert]; [alert addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text=[item.fileName stringByDeletingPathExtension]; tf.placeholder=@"اسم جديد"; }]; [alert addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]]; [alert addAction:[UIAlertAction actionWithTitle:@"تأكيد" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ NSString *newName=[alert.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]; if (newName.length==0) return; if (![newName.pathExtension.lowercaseString isEqualToString:@"wav"]) newName=[newName stringByAppendingPathExtension:@"wav"]; NSString *newPath=[[item.filePath stringByDeletingLastPathComponent] stringByAppendingPathComponent:newName]; NSError *err=nil; [[NSFileManager defaultManager] moveItemAtPath:item.filePath toPath:newPath error:&err]; if (!err) { NSString *oldJson=[[item.filePath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; if ([[NSFileManager defaultManager] fileExistsAtPath:oldJson]) { NSString *newJson=[[newPath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; [[NSFileManager defaultManager] moveItemAtPath:oldJson toPath:newJson error:nil]; } [self loadRecordings]; } }]]; [self presentViewController:alert animated:YES completion:nil]; }
 @end
