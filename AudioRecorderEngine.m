@@ -111,12 +111,7 @@ static BOOL CRPIsValidRecordingAtPath(NSString *path) {
     return payload >= 1024;
 }
 
-// =============== AUDIO ENHANCEMENT: Smooth AGC ===============
-// Fixed issues in v1.3.2:
-// - Old AGC gained 8x per-buffer causing pumping when mic ON (mixed uplink+downlink RMS swings)
-// - DC offset only half-removed (mean*0.5) leaving hum
-// - Stereo captured as stereo but file header stayed mono -> pitch distortion when mic ON
-// Fix v1.3.3: gentle smoothed gain (max 2.2x), full DC removal, mono downmix, fixed 16kHz
+// =============== Smooth AGC - v1.3.4 fix: native rate, no forced 16k ===============
 static double gSmoothedGain = 1.0;
 static double gLastRMS = 2000.0;
 
@@ -125,8 +120,6 @@ static void CRPApplySmoothGainToPCM16(NSMutableData *pcmData) {
     int16_t *samples = (int16_t *)pcmData.mutableBytes;
     NSUInteger sampleCount = pcmData.length / sizeof(int16_t);
     if (sampleCount == 0) return;
-
-    // 1. Measure: mean, RMS, peak
     int64_t sum = 0;
     int64_t sumSq = 0;
     int32_t peak = 0;
@@ -139,47 +132,36 @@ static void CRPApplySmoothGainToPCM16(NSMutableData *pcmData) {
     }
     double mean = (double)sum / (double)sampleCount;
     double rms = sqrt((double)sumSq / (double)sampleCount);
-    if (rms < 5.0) return; // near silence -> leave untouched to avoid noise pumping
-
-    // Smooth RMS to avoid per-buffer pumping when mic ON (uplink silence vs downlink bursts)
+    if (rms < 5.0) return;
     gLastRMS = gLastRMS * 0.85 + rms * 0.15;
     double smoothRMS = gLastRMS;
-
-    // Target: ~3500 RMS gives clear loud without clipping
     double targetRMS = 3200.0;
     double desiredGain = 1.0;
     if (smoothRMS < targetRMS * 0.9) {
         desiredGain = targetRMS / (smoothRMS + 60.0);
         if (desiredGain > 2.2) desiredGain = 2.2;
         if (desiredGain < 1.0) desiredGain = 1.0;
-        // Prevent clipping: check peak headroom
         if (peak > 0) {
             double headroom = 31000.0 / (double)peak;
             if (desiredGain > headroom) desiredGain = headroom;
         }
     } else if (smoothRMS > targetRMS * 1.6) {
-        // Gentle attenuation if too loud
         desiredGain = 0.95;
     } else {
         desiredGain = 1.0;
     }
-    // Smooth gain changes slowly (avoid jumps when mic toggles)
     gSmoothedGain = gSmoothedGain * 0.88 + desiredGain * 0.12;
     double gain = gSmoothedGain;
-    if (fabs(gain - 1.0) < 0.06) return; // negligible
-
-    // 2. Apply: full DC removal + gain
+    if (fabs(gain - 1.0) < 0.06) return;
     for (NSUInteger i = 0; i < sampleCount; i++) {
-        double centered = (double)samples[i] - mean; // full DC removal, not half
+        double centered = (double)samples[i] - mean;
         double out = centered * gain;
-        // Hard limit (no soft-clip distortion)
         if (out > 32767.0) out = 32767.0;
         if (out < -32768.0) out = -32768.0;
         samples[i] = (int16_t)out;
     }
 }
 
-// Reset AGC state on new recording (call start)
 static void CRPResetAGCState(void) {
     gSmoothedGain = 1.0;
     gLastRMS = 2000.0;
@@ -356,16 +338,13 @@ static void CRPResetAGCState(void) {
     NSFileHandle *handle=[[NSFileHandle alloc] initWithFileDescriptor:fd closeOnDealloc:YES];
     if (!handle) { close(fd); return NO; }
     _fileHandle=handle; _currentFilePath=[filePath copy];
-    // v1.3.3 fix: lock to mono 16kHz always -> prevents mic-ON stereo/48k vs mic-OFF mono/8k mismatch
-    // Previously file opened with first buffer's channels/rate then later buffers mismatched -> pitch distortion
-    _wavChannels=1;
-    _wavSampleRate=16000;
-    // Ignore passed sampleRate/channels, always use fixed 16k mono for consistent playback
-    (void)sampleRate; (void)channels;
+    // v1.3.4: use native rate/channels - no forced 16k resampling (fixes fast audio)
+    _wavChannels=(channels>0 && channels<=2)?channels:1;
+    _wavSampleRate=(sampleRate>=8000 && sampleRate<=192000)?sampleRate:16000;
     _headerInitialized=YES;
     CRPWavHeader initial=[self buildWavHeaderWithSampleRate:_wavSampleRate channels:_wavChannels dataSize:0];
     @try { [_fileHandle writeData:[NSData dataWithBytes:&initial length:sizeof(CRPWavHeader)]]; } @catch (NSException *e) { [_fileHandle closeFile]; _fileHandle=nil; _currentFilePath=nil; return NO; }
-    [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Created WAV 16k mono HQ: %@ (AGC smooth)", filePath]];
+    [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Created WAV native %uHz %uch: %@ (smooth AGC)", _wavSampleRate, _wavChannels, filePath]];
     if (_pendingMetadata) {
         NSString *jsonPath=[[filePath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"];
         NSData *jsonData=[NSJSONSerialization dataWithJSONObject:_pendingMetadata options:NSJSONWritingPrettyPrinted error:nil];
@@ -387,7 +366,7 @@ static void CRPResetAGCState(void) {
         atomic_store_explicit(&self->_recordingFlag, true, memory_order_release);
         CRPResetAGCState();
         NSString *metaDesc=metadata ? [NSString stringWithFormat:@" meta=%@", metadata] : @"";
-        [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Recording armed 16k mono smooth-AGC%@", metaDesc]];
+        [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Recording armed native-rate smooth-AGC%@", metaDesc]];
     });
 }
 
@@ -407,7 +386,7 @@ static void CRPResetAGCState(void) {
                     [[NSFileManager defaultManager] removeItemAtPath:jsonPath error:nil];
                     [AudioRecorderEngine appendDiagnosticLog:@"Removed 0-byte stub"];
                 } else {
-                    [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Saved WAV 16k mono: %@ (%u bytes)", self->_currentFilePath, self->_dataBytesWritten]];
+                    [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Saved WAV native: %@ (%u bytes)", self->_currentFilePath, self->_dataBytesWritten]];
                     NSString *jbPrimary=jbroot(@"/var/mobile/Library/CallRecordings");
                     if (jbPrimary.length>0 && ![self->_currentFilePath hasPrefix:jbPrimary]) {
                         NSString *dst=[jbPrimary stringByAppendingPathComponent:[self->_currentFilePath lastPathComponent]];
@@ -439,7 +418,7 @@ static void CRPResetAGCState(void) {
     });
 }
 
-// Convert any format to 16kHz mono PCM16
+// Convert any format to PCM16 but KEEP native rate/channels (no resampling) – fixes fast audio
 - (NSData *)convertBuffers:(NSArray<NSData *> *)buffers frames:(UInt32)frames format:(AudioStreamBasicDescription)asbd outChannels:(uint16_t *)outChannels outSampleRate:(uint32_t *)outSampleRate {
     if (buffers.count==0 || frames==0) return nil;
     BOOL isFloat=(asbd.mFormatFlags & kAudioFormatFlagIsFloat)!=0;
@@ -447,122 +426,45 @@ static void CRPResetAGCState(void) {
     uint32_t bits=asbd.mBitsPerChannel>0?asbd.mBitsPerChannel:(isFloat?32u:16u);
     uint32_t rawChannels=asbd.mChannelsPerFrame>0?asbd.mChannelsPerFrame:(uint32_t)buffers.count;
     uint32_t inRate=(asbd.mSampleRate>=8000.0 && asbd.mSampleRate<=192000.0)?(uint32_t)(asbd.mSampleRate+0.5):16000u;
-    uint32_t targetRate=16000;
-    // Always output mono
-    if (outChannels) *outChannels=1;
-    if (outSampleRate) *outSampleRate=targetRate;
-
-    // Fast path: already 16k mono int16 interleaved
-    if (!isFloat && bits==16 && rawChannels==1 && inRate==targetRate && !isNonInterleaved) {
+    uint16_t targetChannels=(rawChannels>=2)?2:1;
+    if (targetChannels>2) targetChannels=2;
+    if (targetChannels==0) targetChannels=1;
+    if (outChannels) *outChannels=targetChannels;
+    if (outSampleRate) *outSampleRate=inRate;
+    // Fast path: already int16 interleaved mono/stereo at native rate
+    if (!isFloat && bits==16 && !isNonInterleaved && rawChannels==targetChannels) {
         NSData *first=buffers[0];
-        NSUInteger expectedBytes=(NSUInteger)frames*sizeof(int16_t);
+        NSUInteger expectedBytes=(NSUInteger)frames*(NSUInteger)targetChannels*sizeof(int16_t);
         if (first.length>=expectedBytes) return (first.length==expectedBytes)?first:[first subdataWithRange:NSMakeRange(0,expectedBytes)];
         return first;
     }
-
-    // Step 1: decode to mono 32-bit intermediate at input rate
-    NSUInteger outFrames = frames;
-    NSMutableData *monoAtInRate = [NSMutableData dataWithLength:(NSUInteger)frames * sizeof(int32_t)];
-    int32_t *tmp = (int32_t *)monoAtInRate.mutableBytes;
-    // Prepare per-channel sources
-    for (UInt32 f=0; f<frames; f++) {
-        int64_t acc=0;
-        uint32_t count=0;
-        for (uint32_t ch=0; ch<rawChannels; ch++) {
-            NSData *planeData=nil; uint32_t stride=1, offset=0;
-            if (isNonInterleaved) { planeData=(ch<buffers.count)?buffers[ch]:buffers[0]; stride=1; offset=0; }
-            else { planeData=buffers[0]; stride=rawChannels>0?rawChannels:1; offset=(ch<rawChannels)?ch:0; }
-            const uint8_t *bytes=(const uint8_t *)planeData.bytes; NSUInteger byteLen=planeData.length;
-            int32_t sample=0;
-            if (isFloat && bits==32) {
-                const float *src=(const float *)bytes; NSUInteger maxSamples=byteLen/sizeof(float);
-                NSUInteger idx=(NSUInteger)f*stride+offset; float val=(idx<maxSamples)?src[idx]:0.0f;
-                if (val>1.0f) val=1.0f; if (val<-1.0f) val=-1.0f;
-                sample=(int32_t)(val*32767.0f);
-            } else if (isFloat && bits==64) {
-                const double *src=(const double *)bytes; NSUInteger maxSamples=byteLen/sizeof(double);
-                NSUInteger idx=(NSUInteger)f*stride+offset; double val=(idx<maxSamples)?src[idx]:0.0;
-                if (val>1.0) val=1.0; if (val<-1.0) val=-1.0;
-                sample=(int32_t)(val*32767.0);
-            } else if (!isFloat && bits==16) {
-                const int16_t *src=(const int16_t *)bytes; NSUInteger maxSamples=byteLen/sizeof(int16_t);
-                NSUInteger idx=(NSUInteger)f*stride+offset; sample=(idx<maxSamples)?src[idx]:0;
-            } else if (!isFloat && bits==32) {
-                const int32_t *src=(const int32_t *)bytes; NSUInteger maxSamples=byteLen/sizeof(int32_t);
-                NSUInteger idx=(NSUInteger)f*stride+offset; int32_t raw=(idx<maxSamples)?src[idx]:0;
-                uint32_t fracBits=(asbd.mFormatFlags>>7)&0x3Fu;
-                int32_t shifted=(fracBits==24u)?(raw>>9):(raw>>16); sample=shifted;
-            } else if (!isFloat && bits==24) {
-                NSUInteger maxSamples=byteLen/3u; NSUInteger idx=(NSUInteger)f*stride+offset;
-                if (idx<maxSamples) { const uint8_t *p=bytes+idx*3u; sample=(int16_t)((uint16_t)p[1]|((uint16_t)p[2]<<8)); } else sample=0;
-            } else { sample=0; }
-            acc+=sample; count++;
-        }
-        tmp[f]=(count>0)?(int32_t)(acc/(int64_t)count):0;
+    NSUInteger outByteCount=(NSUInteger)frames*(NSUInteger)targetChannels*sizeof(int16_t);
+    NSMutableData *pcm16=[NSMutableData dataWithLength:outByteCount];
+    int16_t *dst=(int16_t *)pcm16.mutableBytes;
+    for (uint16_t ch=0; ch<targetChannels; ch++) {
+        NSData *planeData=nil; uint32_t stride=1, offset=0;
+        if (isNonInterleaved) { planeData=(ch<buffers.count)?buffers[ch]:buffers[0]; stride=1; offset=0; }
+        else { planeData=buffers[0]; stride=(rawChannels>0)?rawChannels:1; offset=(ch<rawChannels)?ch:0; }
+        const uint8_t *bytes=(const uint8_t *)planeData.bytes; NSUInteger byteLen=planeData.length;
+        if (isFloat && bits==32) {
+            const float *src=(const float *)bytes; NSUInteger maxSamples=byteLen/sizeof(float);
+            for (UInt32 f=0; f<frames; f++) { NSUInteger idx=(NSUInteger)f*stride+offset; float val=(idx<maxSamples)?src[idx]:0.0f; dst[(NSUInteger)f*targetChannels+ch]=CRPFloatToInt16(val); }
+        } else if (isFloat && bits==64) {
+            const double *src=(const double *)bytes; NSUInteger maxSamples=byteLen/sizeof(double);
+            for (UInt32 f=0; f<frames; f++) { NSUInteger idx=(NSUInteger)f*stride+offset; float val=(idx<maxSamples)?(float)src[idx]:0.0f; dst[(NSUInteger)f*targetChannels+ch]=CRPFloatToInt16(val); }
+        } else if (!isFloat && bits==16) {
+            const int16_t *src=(const int16_t *)bytes; NSUInteger maxSamples=byteLen/sizeof(int16_t);
+            for (UInt32 f=0; f<frames; f++) { NSUInteger idx=(NSUInteger)f*stride+offset; dst[(NSUInteger)f*targetChannels+ch]=(idx<maxSamples)?src[idx]:0; }
+        } else if (!isFloat && bits==32) {
+            const int32_t *src=(const int32_t *)bytes; NSUInteger maxSamples=byteLen/sizeof(int32_t);
+            uint32_t fracBits=(asbd.mFormatFlags>>7)&0x3Fu;
+            for (UInt32 f=0; f<frames; f++) { NSUInteger idx=(NSUInteger)f*stride+offset; int32_t raw=(idx<maxSamples)?src[idx]:0; int32_t shifted=(fracBits==24u)?(raw>>9):(raw>>16); if (shifted>INT16_MAX) shifted=INT16_MAX; if (shifted<INT16_MIN) shifted=INT16_MIN; dst[(NSUInteger)f*targetChannels+ch]=(int16_t)shifted; }
+        } else if (!isFloat && bits==24) {
+            NSUInteger maxSamples=byteLen/3u;
+            for (UInt32 f=0; f<frames; f++) { NSUInteger idx=(NSUInteger)f*stride+offset; if (idx<maxSamples) { const uint8_t *p=bytes+idx*3u; int16_t s16=(int16_t)((uint16_t)p[1]|((uint16_t)p[2]<<8)); dst[(NSUInteger)f*targetChannels+ch]=s16; } else dst[(NSUInteger)f*targetChannels+ch]=0; }
+        } else return nil;
     }
-
-    // Step 2: resample to 16k if needed
-    if (inRate == targetRate) {
-        NSMutableData *pcm16=[NSMutableData dataWithLength:(NSUInteger)outFrames*sizeof(int16_t)];
-        int16_t *dst=(int16_t *)pcm16.mutableBytes;
-        for (NSUInteger i=0;i<outFrames;i++) {
-            int32_t v=tmp[i]; if (v>32767) v=32767; if (v<-32768) v=-32768;
-            dst[i]=(int16_t)v;
-        }
-        return pcm16;
-    } else if (inRate == 48000 && targetRate==16000) {
-        // Decimate 3:1 with simple averaging of 3
-        NSUInteger newFrames = frames/3;
-        if (newFrames==0) return nil;
-        NSMutableData *pcm16=[NSMutableData dataWithLength:newFrames*sizeof(int16_t)];
-        int16_t *dst=(int16_t *)pcm16.mutableBytes;
-        for (NSUInteger i=0;i<newFrames;i++) {
-            int64_t sum3=(int64_t)tmp[i*3]+tmp[i*3+1]+tmp[i*3+2];
-            int32_t v=(int32_t)(sum3/3); if (v>32767) v=32767; if (v<-32768) v=-32768;
-            dst[i]=(int16_t)v;
-        }
-        return pcm16;
-    } else if (inRate == 44100 && targetRate==16000) {
-        // Resample 44100->16000 ~ 2.756:1 – use linear interpolation
-        double ratio=(double)inRate/(double)targetRate;
-        NSUInteger newFrames=(NSUInteger)((double)frames/ratio);
-        if (newFrames==0) return nil;
-        NSMutableData *pcm16=[NSMutableData dataWithLength:newFrames*sizeof(int16_t)];
-        int16_t *dst=(int16_t *)pcm16.mutableBytes;
-        for (NSUInteger i=0;i<newFrames;i++) {
-            double pos=i*ratio; NSUInteger idx0=(NSUInteger)pos; NSUInteger idx1=MIN(idx0+1, frames-1);
-            double frac=pos - (double)idx0; (void)frac;
-            // Simple nearest for speed; use idx0
-            int32_t v=tmp[idx0]; if (v>32767) v=32767; if (v<-32768) v=-32768;
-            dst[i]=(int16_t)v;
-            (void)idx1;
-        }
-        return pcm16;
-    } else if (inRate == 8000 && targetRate==16000) {
-        // Upsample 8k->16k by duplication
-        NSUInteger newFrames=frames*2;
-        NSMutableData *pcm16=[NSMutableData dataWithLength:newFrames*sizeof(int16_t)];
-        int16_t *dst=(int16_t *)pcm16.mutableBytes;
-        for (NSUInteger i=0;i<frames;i++) {
-            int32_t v=tmp[i]; if (v>32767) v=32767; if (v<-32768) v=-32768;
-            dst[i*2]=(int16_t)v; dst[i*2+1]=(int16_t)v;
-        }
-        return pcm16;
-    } else {
-        // Generic linear resample
-        double ratio=(double)inRate/(double)targetRate;
-        NSUInteger newFrames=(NSUInteger)((double)frames/ratio);
-        if (newFrames==0) return nil;
-        NSMutableData *pcm16=[NSMutableData dataWithLength:newFrames*sizeof(int16_t)];
-        int16_t *dst=(int16_t *)pcm16.mutableBytes;
-        for (NSUInteger i=0;i<newFrames;i++) {
-            double pos=i*ratio; NSUInteger idx=(NSUInteger)pos;
-            if (idx>=frames) idx=frames-1;
-            int32_t v=tmp[idx]; if (v>32767) v=32767; if (v<-32768) v=-32768;
-            dst[i]=(int16_t)v;
-        }
-        return pcm16;
-    }
+    return pcm16;
 }
 
 - (void)appendAudioBufferList:(AudioBufferList *)ioData frames:(UInt32)inNumberFrames format:(AudioStreamBasicDescription)asbd {
@@ -578,7 +480,6 @@ static void CRPResetAGCState(void) {
         uint16_t ch=1; uint32_t rate=16000;
         NSMutableData *pcm16Data=[[self convertBuffers:copiedBuffers frames:framesCopy format:formatCopy outChannels:&ch outSampleRate:&rate] mutableCopy];
         if (!pcm16Data || pcm16Data.length==0) return;
-        // Smooth AGC (prevents mic-ON pumping)
         CRPApplySmoothGainToPCM16(pcm16Data);
         if (![self openWavFileIfNeededWithSampleRate:rate channels:ch]) return;
         if ((uint64_t)self->_dataBytesWritten + (uint64_t)pcm16Data.length > (uint64_t)(UINT32_MAX-44u)) return;
@@ -590,7 +491,7 @@ static void CRPResetAGCState(void) {
             if (!self->_notifiedCapturing && self->_dataBytesWritten >= 4096u) {
                 self->_notifiedCapturing=YES;
                 CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CRP_DARWIN_CAPTURING_NOTIFICATION, NULL, NULL, true);
-                [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"PCM verified %u bytes 16k mono -> CAPTURING", self->_dataBytesWritten]];
+                [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"PCM verified %u bytes native %uHz %uch -> CAPTURING", self->_dataBytesWritten, rate, ch]];
             }
             if (self->_bytesSinceLastHeaderFlush >= 32768u) { self->_bytesSinceLastHeaderFlush=0; [self writeHeaderToStartOfFileWithDataSize:self->_dataBytesWritten]; }
         } @catch (NSException *e) {}

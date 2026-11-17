@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#import <QuartzCore/QuartzCore.h>
 
 #define CRP_PREFS_PING_NOTIFICATION CFSTR("com.relaxin.callrecorder/ping")
 #define CRP_PREFS_PONG_NOTIFICATION CFSTR("com.relaxin.callrecorder/pong")
@@ -54,18 +55,18 @@ static uint32_t CRPGetPayloadSize(NSString *path) {
 @property (nonatomic, copy) NSString *currentlyPlayingPath;
 @property (nonatomic, assign) NSInteger pongCount;
 @property (nonatomic, strong) UIView *emptyView;
+@property (nonatomic, strong) UIView *headerContainer;
 @end
 
 static __weak CRPRootListController *gWeakPrefsController=nil;
 static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     CRPRootListController *ctrl=gWeakPrefsController;
-    if (ctrl) dispatch_async(dispatch_get_main_queue(), ^{ ctrl.pongCount+=1; [ctrl.tableView reloadData]; });
+    if (ctrl) dispatch_async(dispatch_get_main_queue(), ^{ ctrl.pongCount+=1; [ctrl.tableView performSelectorOnMainThread:@selector(reloadData) withObject:nil waitUntilDone:NO]; });
 }
 
 @implementation CRPRootListController
 - (instancetype)init { self=[super init]; if (self) { _recordings=[NSMutableArray array]; _pongCount=0; } return self; }
 - (void)reloadSpecifiers {}
-
 - (NSArray<NSString *> *)candidateDirectories {
     NSMutableArray<NSString *> *dirs=[NSMutableArray array];
     NSString *jbPrimary=jbroot(@"/var/mobile/Library/CallRecordings");
@@ -76,158 +77,273 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
 }
 - (NSUserDefaults *)prefs { return [[NSUserDefaults alloc] initWithSuiteName:CRP_SUITE] ?: [NSUserDefaults standardUserDefaults]; }
 
-#pragma mark - View lifecycle (smooth, auto-layout)
+#pragma mark - View
 
 - (void)loadView {
     [super loadView];
     self.view.backgroundColor=[UIColor systemGroupedBackgroundColor];
+    self.view.semanticContentAttribute=UISemanticContentAttributeForceRightToLeft;
 
-    // Table
     UITableView *tv=[[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
     tv.translatesAutoresizingMaskIntoConstraints=NO;
     tv.delegate=self; tv.dataSource=self; tv.allowsSelection=YES;
-    tv.estimatedRowHeight=66; tv.rowHeight=UITableViewAutomaticDimension;
+    tv.estimatedRowHeight=64; tv.rowHeight=UITableViewAutomaticDimension;
+    tv.sectionHeaderHeight=UITableViewAutomaticDimension; tv.estimatedSectionHeaderHeight=32;
+    tv.sectionFooterHeight=UITableViewAutomaticDimension; tv.estimatedSectionFooterHeight=28;
     tv.keyboardDismissMode=UIScrollViewKeyboardDismissModeOnDrag;
+    tv.semanticContentAttribute=UISemanticContentAttributeForceRightToLeft;
     [self.view addSubview:tv];
     self.tableView=tv;
     [NSLayoutConstraint activateConstraints:@[
-        [tv.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [tv.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
         [tv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [tv.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [tv.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     ]];
 
-    // Empty state view (hidden by default)
+    // Empty view
     UIView *ev=[[UIView alloc] init]; ev.hidden=YES; ev.translatesAutoresizingMaskIntoConstraints=NO;
     UIImageView *evIcon=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"phone.badge.checkmark"]];
     evIcon.tintColor=[UIColor systemGray2Color]; evIcon.translatesAutoresizingMaskIntoConstraints=NO; evIcon.contentMode=UIViewContentModeScaleAspectFit;
-    evIcon.preferredSymbolConfiguration=[UIImageSymbolConfiguration configurationWithPointSize:48 weight:UIImageSymbolWeightLight];
-    UILabel *evTitle=[[UILabel alloc] init]; evTitle.text=@"لا توجد تسجيلات بعد"; evTitle.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold]; evTitle.textColor=[UIColor secondaryLabelColor]; evTitle.textAlignment=NSTextAlignmentCenter; evTitle.translatesAutoresizingMaskIntoConstraints=NO;
-    UILabel *evSub=[[UILabel alloc] init]; evSub.text=@"ابدأ مكالمة واضغط زر التسجيل الأحمر داخل شاشة المكالمة"; evSub.font=[UIFont systemFontOfSize:13 weight:UIFontWeightRegular]; evSub.textColor=[UIColor tertiaryLabelColor]; evSub.textAlignment=NSTextAlignmentCenter; evSub.numberOfLines=0; evSub.translatesAutoresizingMaskIntoConstraints=NO;
+    evIcon.preferredSymbolConfiguration=[UIImageSymbolConfiguration configurationWithPointSize:56 weight:UIImageSymbolWeightUltraLight];
+    UILabel *evTitle=[[UILabel alloc] init]; evTitle.text=@"لا توجد تسجيلات بعد"; evTitle.font=[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold]; evTitle.textColor=[UIColor secondaryLabelColor]; evTitle.textAlignment=NSTextAlignmentCenter; evTitle.translatesAutoresizingMaskIntoConstraints=NO;
+    UILabel *evSub=[[UILabel alloc] init]; evSub.text=@"ابدأ مكالمة واضغط زر التسجيل الأحمر\nداخل شاشة المكالمة"; evSub.font=[UIFont systemFontOfSize:13 weight:UIFontWeightRegular]; evSub.textColor=[UIColor tertiaryLabelColor]; evSub.textAlignment=NSTextAlignmentCenter; evSub.numberOfLines=0; evSub.translatesAutoresizingMaskIntoConstraints=NO;
     [ev addSubview:evIcon]; [ev addSubview:evTitle]; [ev addSubview:evSub];
     [NSLayoutConstraint activateConstraints:@[
-        [evIcon.centerXAnchor constraintEqualToAnchor:ev.centerXAnchor], [evIcon.topAnchor constraintEqualToAnchor:ev.topAnchor constant:32], [evIcon.widthAnchor constraintEqualToConstant:64], [evIcon.heightAnchor constraintEqualToConstant:64],
-        [evTitle.topAnchor constraintEqualToAnchor:evIcon.bottomAnchor constant:14], [evTitle.leadingAnchor constraintEqualToAnchor:ev.leadingAnchor constant:24], [evTitle.trailingAnchor constraintEqualToAnchor:ev.trailingAnchor constant:-24],
-        [evSub.topAnchor constraintEqualToAnchor:evTitle.bottomAnchor constant:6], [evSub.leadingAnchor constraintEqualToAnchor:ev.leadingAnchor constant:24], [evSub.trailingAnchor constraintEqualToAnchor:ev.trailingAnchor constant:-24],
+        [evIcon.centerXAnchor constraintEqualToAnchor:ev.centerXAnchor], [evIcon.topAnchor constraintEqualToAnchor:ev.topAnchor constant:40], [evIcon.widthAnchor constraintEqualToConstant:72], [evIcon.heightAnchor constraintEqualToConstant:72],
+        [evTitle.topAnchor constraintEqualToAnchor:evIcon.bottomAnchor constant:16], [evTitle.leadingAnchor constraintEqualToAnchor:ev.leadingAnchor constant:24], [evTitle.trailingAnchor constraintEqualToAnchor:ev.trailingAnchor constant:-24],
+        [evSub.topAnchor constraintEqualToAnchor:evTitle.bottomAnchor constant:8], [evSub.leadingAnchor constraintEqualToAnchor:ev.leadingAnchor constant:32], [evSub.trailingAnchor constraintEqualToAnchor:ev.trailingAnchor constant:-32], [evSub.bottomAnchor constraintEqualToAnchor:ev.bottomAnchor constant:-16],
     ]];
     self.emptyView=ev;
 
-    // Player bar – blur + controls (smooth)
-    UIVisualEffectView *bar=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
-    bar.translatesAutoresizingMaskIntoConstraints=NO; bar.hidden=YES; bar.layer.cornerRadius=16; bar.layer.maskedCorners=kCALayerMinXMinYCorner|kCALayerMaxXMinYCorner; bar.clipsToBounds=YES;
-    bar.layer.shadowColor=[UIColor blackColor].CGColor; bar.layer.shadowOpacity=0.08; bar.layer.shadowRadius=10; bar.layer.shadowOffset=CGSizeMake(0,-3);
+    // Player bar – ultra clean
+    UIVisualEffect *effect=[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial];
+    UIVisualEffectView *bar=[[UIVisualEffectView alloc] initWithEffect:effect];
+    bar.translatesAutoresizingMaskIntoConstraints=NO; bar.hidden=YES; bar.alpha=0;
+    bar.layer.cornerRadius=18; bar.layer.maskedCorners=kCALayerMinXMinYCorner|kCALayerMaxXMinYCorner; bar.clipsToBounds=YES;
+    bar.layer.shadowColor=[UIColor blackColor].CGColor; bar.layer.shadowOpacity=0.12; bar.layer.shadowRadius=14; bar.layer.shadowOffset=CGSizeMake(0,-4);
     [self.view addSubview:bar]; self.playerBar=bar;
 
-    // Content inside bar
-    UIView *content=bar.contentView;
-    UILabel *nowLabel=[[UILabel alloc] init]; nowLabel.translatesAutoresizingMaskIntoConstraints=NO; nowLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold]; nowLabel.textColor=[UIColor labelColor]; nowLabel.textAlignment=NSTextAlignmentCenter; nowLabel.text=@"لم يتم اختيار تسجيل"; nowLabel.numberOfLines=1;
-    UISlider *slider=[[UISlider alloc] init]; slider.translatesAutoresizingMaskIntoConstraints=NO; slider.minimumTrackTintColor=[UIColor systemBlueColor];
+    UIView *content=bar.contentView; content.translatesAutoresizingMaskIntoConstraints=NO;
+
+    UILabel *nowLabel=[[UILabel alloc] init]; nowLabel.translatesAutoresizingMaskIntoConstraints=NO; nowLabel.font=[UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold]; nowLabel.textColor=[UIColor labelColor]; nowLabel.textAlignment=NSTextAlignmentCenter; nowLabel.text=@"لم يتم اختيار تسجيل"; nowLabel.numberOfLines=1; nowLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
+    UISlider *slider=[[UISlider alloc] init]; slider.translatesAutoresizingMaskIntoConstraints=NO; slider.minimumTrackTintColor=[UIColor systemBlueColor]; slider.maximumTrackTintColor=[UIColor systemFillColor]; slider.thumbTintColor=[UIColor systemBlueColor];
     [slider addTarget:self action:@selector(sliderDragging:) forControlEvents:UIControlEventValueChanged];
-    [slider addTarget:self action:@selector(sliderReleased:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchUpOutside];
-    UILabel *cur=[[UILabel alloc] init]; cur.translatesAutoresizingMaskIntoConstraints=NO; cur.font=[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium]; cur.textColor=[UIColor secondaryLabelColor]; cur.text=@"00:00";
-    UILabel *dur=[[UILabel alloc] init]; dur.translatesAutoresizingMaskIntoConstraints=NO; dur.font=[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium]; dur.textColor=[UIColor secondaryLabelColor]; dur.textAlignment=NSTextAlignmentRight; dur.text=@"00:00";
-    UIButton *playBtn=[UIButton buttonWithType:UIButtonTypeSystem]; playBtn.translatesAutoresizingMaskIntoConstraints=NO; playBtn.backgroundColor=[UIColor systemBlueColor]; playBtn.tintColor=[UIColor whiteColor]; playBtn.layer.cornerRadius=22;
+    [slider addTarget:self action:@selector(sliderReleased:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];
+    UILabel *cur=[[UILabel alloc] init]; cur.translatesAutoresizingMaskIntoConstraints=NO; cur.font=[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium]; cur.textColor=[UIColor secondaryLabelColor]; cur.text=@"00:00"; cur.textAlignment=NSTextAlignmentRight;
+    UILabel *dur=[[UILabel alloc] init]; dur.translatesAutoresizingMaskIntoConstraints=NO; dur.font=[UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium]; dur.textColor=[UIColor secondaryLabelColor]; dur.textAlignment=NSTextAlignmentLeft; dur.text=@"00:00";
+    UIButton *playBtn=[UIButton buttonWithType:UIButtonTypeSystem]; playBtn.translatesAutoresizingMaskIntoConstraints=NO; playBtn.backgroundColor=[UIColor systemBlueColor]; playBtn.tintColor=[UIColor whiteColor]; playBtn.layer.cornerRadius=22; playBtn.layer.shadowColor=[UIColor systemBlueColor].CGColor; playBtn.layer.shadowOpacity=0.25; playBtn.layer.shadowRadius=6; playBtn.layer.shadowOffset=CGSizeMake(0,3);
     [playBtn setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal]; [playBtn addTarget:self action:@selector(togglePlayPause) forControlEvents:UIControlEventTouchUpInside];
-    UIButton *share=[UIButton buttonWithType:UIButtonTypeSystem]; share.translatesAutoresizingMaskIntoConstraints=NO; [share setImage:[UIImage systemImageNamed:@"square.and.arrow.up"] forState:UIControlStateNormal]; [share addTarget:self action:@selector(playerShareTapped) forControlEvents:UIControlEventTouchUpInside];
-    UIButton *del=[UIButton buttonWithType:UIButtonTypeSystem]; del.translatesAutoresizingMaskIntoConstraints=NO; del.tintColor=[UIColor systemRedColor]; [del setImage:[UIImage systemImageNamed:@"trash"] forState:UIControlStateNormal]; [del addTarget:self action:@selector(playerDeleteTapped) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *share=[UIButton buttonWithType:UIButtonTypeSystem]; share.translatesAutoresizingMaskIntoConstraints=NO; share.tintColor=[UIColor secondaryLabelColor]; [share setImage:[UIImage systemImageNamed:@"square.and.arrow.up" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightMedium]] forState:UIControlStateNormal]; share.backgroundColor=[UIColor tertiarySystemFillColor]; share.layer.cornerRadius=16; [share addTarget:self action:@selector(playerShareTapped) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *del=[UIButton buttonWithType:UIButtonTypeSystem]; del.translatesAutoresizingMaskIntoConstraints=NO; del.tintColor=[UIColor systemRedColor]; [del setImage:[UIImage systemImageNamed:@"trash" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightMedium]] forState:UIControlStateNormal]; del.backgroundColor=[[UIColor systemRedColor] colorWithAlphaComponent:0.10]; del.layer.cornerRadius=16; [del addTarget:self action:@selector(playerDeleteTapped) forControlEvents:UIControlEventTouchUpInside];
+
     [content addSubview:nowLabel]; [content addSubview:slider]; [content addSubview:cur]; [content addSubview:dur]; [content addSubview:playBtn]; [content addSubview:share]; [content addSubview:del];
     self.nowPlayingLabel=nowLabel; self.progressSlider=slider; self.currentTimeLabel=cur; self.durationLabel=dur; self.playPauseBtn=playBtn;
 
-    // Layout
     [NSLayoutConstraint activateConstraints:@[
         [bar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [bar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [bar.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [bar.heightAnchor constraintEqualToConstant:116],
-        [nowLabel.topAnchor constraintEqualToAnchor:content.topAnchor constant:10],
+        [bar.heightAnchor constraintEqualToConstant:122],
+
+        [nowLabel.topAnchor constraintEqualToAnchor:content.topAnchor constant:12],
         [nowLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:16],
         [nowLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-16],
-        [cur.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:16],
+
+        [slider.topAnchor constraintEqualToAnchor:nowLabel.bottomAnchor constant:8],
+        [slider.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:56],
+        [slider.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-56],
+        [slider.heightAnchor constraintEqualToConstant:20],
+
         [cur.centerYAnchor constraintEqualToAnchor:slider.centerYAnchor],
-        [cur.widthAnchor constraintEqualToConstant:40],
-        [dur.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-16],
+        [cur.trailingAnchor constraintEqualToAnchor:slider.leadingAnchor constant:-8],
+        [cur.widthAnchor constraintEqualToConstant:38],
+
         [dur.centerYAnchor constraintEqualToAnchor:slider.centerYAnchor],
-        [dur.widthAnchor constraintEqualToConstant:40],
-        [slider.topAnchor constraintEqualToAnchor:nowLabel.bottomAnchor constant:6],
-        [slider.leadingAnchor constraintEqualToAnchor:cur.trailingAnchor constant:8],
-        [slider.trailingAnchor constraintEqualToAnchor:dur.leadingAnchor constant:-8],
+        [dur.leadingAnchor constraintEqualToAnchor:slider.trailingAnchor constant:8],
+        [dur.widthAnchor constraintEqualToConstant:38],
+
         [playBtn.topAnchor constraintEqualToAnchor:slider.bottomAnchor constant:10],
         [playBtn.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
         [playBtn.widthAnchor constraintEqualToConstant:44], [playBtn.heightAnchor constraintEqualToConstant:44],
+
         [share.centerYAnchor constraintEqualToAnchor:playBtn.centerYAnchor],
-        [share.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:28],
-        [share.widthAnchor constraintEqualToConstant:32], [share.heightAnchor constraintEqualToConstant:32],
+        [share.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:22],
+        [share.widthAnchor constraintEqualToConstant:38], [share.heightAnchor constraintEqualToConstant:38],
+
         [del.centerYAnchor constraintEqualToAnchor:playBtn.centerYAnchor],
-        [del.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-28],
-        [del.widthAnchor constraintEqualToConstant:32], [del.heightAnchor constraintEqualToConstant:32],
+        [del.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-22],
+        [del.widthAnchor constraintEqualToConstant:38], [del.heightAnchor constraintEqualToConstant:38],
     ]];
 }
 
+// Build header with Auto Layout – fixes broken frame layout in screenshot
 - (UIView *)buildHeaderView {
-    CGFloat w = self.tableView.bounds.size.width;
-    if (w < 100) w = UIScreen.mainScreen.bounds.size.width;
-    UIView *container=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,150)];
+    UIView *container=[[UIView alloc] init];
+    container.backgroundColor=[UIColor clearColor];
+    container.preservesSuperviewLayoutMargins=NO;
+
     // Card
-    UIView *card=[[UIView alloc] initWithFrame:CGRectMake(16,12,w-32,128)];
+    UIView *card=[[UIView alloc] init]; card.translatesAutoresizingMaskIntoConstraints=NO;
     card.backgroundColor=[UIColor secondarySystemGroupedBackgroundColor];
-    card.layer.shadowColor=[UIColor blackColor].CGColor; card.layer.shadowOpacity=0.06; card.layer.shadowRadius=10; card.layer.shadowOffset=CGSizeMake(0,4);
+    card.layer.cornerRadius=18; card.layer.cornerCurve=kCACornerCurveContinuous;
+    card.layer.shadowColor=[UIColor blackColor].CGColor; card.layer.shadowOpacity=0.07; card.layer.shadowRadius=12; card.layer.shadowOffset=CGSizeMake(0,5);
+    card.layer.masksToBounds=NO;
     [container addSubview:card];
 
-    // Icon + title row
+    // Top row: icon + texts + pill
     UIImageView *icon=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"waveform.circle.fill"]];
-    icon.tintColor=[UIColor systemBlueColor]; icon.frame=CGRectMake(14,14,30,30);
-    icon.preferredSymbolConfiguration=[UIImageSymbolConfiguration configurationWithPointSize:28 weight:UIImageSymbolWeightRegular];
-    [card addSubview:icon];
-    UILabel *title=[[UILabel alloc] initWithFrame:CGRectMake(50,14, w-120,20)];
-    title.text=@"مسجل المكالمات"; title.font=[UIFont systemFontOfSize:16 weight:UIFontWeightBold]; title.textColor=[UIColor labelColor];
-    [card addSubview:title];
-    UILabel *subtitle=[[UILabel alloc] initWithFrame:CGRectMake(50,34, w-120,13)];
-    subtitle.text=@"تسجيل تلقائي نقي — بدون سبيكر"; subtitle.font=[UIFont systemFontOfSize:11 weight:UIFontWeightMedium]; subtitle.textColor=[UIColor secondaryLabelColor];
-    [card addSubview:subtitle];
+    icon.translatesAutoresizingMaskIntoConstraints=NO; icon.tintColor=[UIColor systemBlueColor]; icon.contentMode=UIViewContentModeScaleAspectFit;
+    icon.preferredSymbolConfiguration=[UIImageSymbolConfiguration configurationWithPointSize:32 weight:UIImageSymbolWeightRegular];
+    icon.layer.shadowColor=[UIColor systemBlueColor].CGColor; icon.layer.shadowOpacity=0.18; icon.layer.shadowRadius=8;
 
-    // Status pill
-    BOOL active = self.pongCount>0;
-    NSString *txt = active ? @"نشط" : @"بانتظار الخدمة";
-    UIColor *pillColor = active ? [UIColor systemGreenColor] : [UIColor systemOrangeColor];
-    UIView *pill=[[UIView alloc] initWithFrame:CGRectMake(card.bounds.size.width-70,16,58,22)];
-    pill.backgroundColor=[pillColor colorWithAlphaComponent:0.12]; pill.layer.cornerRadius=11; pill.clipsToBounds=YES;
-    UIView *dot=[[UIView alloc] initWithFrame:CGRectMake(8,7,8,8)]; dot.backgroundColor=pillColor; dot.layer.cornerRadius=4;
-    [pill addSubview:dot];
-    UILabel *pillLab=[[UILabel alloc] initWithFrame:CGRectMake(20,0,34,22)]; pillLab.text=txt; pillLab.font=[UIFont systemFontOfSize:10 weight:UIFontWeightBold]; pillLab.textColor=pillColor; pillLab.textAlignment=NSTextAlignmentCenter;
-    [pill addSubview:pillLab]; [card addSubview:pill];
+    UILabel *title=[[UILabel alloc] init]; title.translatesAutoresizingMaskIntoConstraints=NO;
+    title.text=@"مسجل المكالمات"; title.font=[UIFont systemFontOfSize:18 weight:UIFontWeightBold]; title.textColor=[UIColor labelColor]; title.textAlignment=NSTextAlignmentRight;
+    UILabel *subtitle=[[UILabel alloc] init]; subtitle.translatesAutoresizingMaskIntoConstraints=NO;
+    subtitle.text=@"تسجيل نقي — بدون سبيكر • يعمل تلقائياً"; subtitle.font=[UIFont systemFontOfSize:11.5 weight:UIFontWeightMedium]; subtitle.textColor=[UIColor secondaryLabelColor]; subtitle.textAlignment=NSTextAlignmentRight; subtitle.numberOfLines=1;
+
+    UIStackView *textStack=[[UIStackView alloc] initWithArrangedSubviews:@[title, subtitle]];
+    textStack.translatesAutoresizingMaskIntoConstraints=NO; textStack.axis=UILayoutConstraintAxisVertical; textStack.spacing=2; textStack.alignment=UIStackViewAlignmentTrailing;
+
+    // Pill
+    BOOL active=self.pongCount>0;
+    UIColor *pillColor= active ? [UIColor systemGreenColor] : [UIColor systemOrangeColor];
+    NSString *pillText= active ? @"نشط" : @"بانتظار الخدمة";
+    UIView *pill=[[UIView alloc] init]; pill.translatesAutoresizingMaskIntoConstraints=NO;
+    pill.backgroundColor=[pillColor colorWithAlphaComponent:0.13]; pill.layer.cornerRadius=11; pill.clipsToBounds=YES;
+    UIView *dot=[[UIView alloc] init]; dot.translatesAutoresizingMaskIntoConstraints=NO; dot.backgroundColor=pillColor; dot.layer.cornerRadius=4;
+    UILabel *pillLab=[[UILabel alloc] init]; pillLab.translatesAutoresizingMaskIntoConstraints=NO; pillLab.text=pillText; pillLab.font=[UIFont systemFontOfSize:11 weight:UIFontWeightBold]; pillLab.textColor=pillColor; pillLab.textAlignment=NSTextAlignmentCenter;
+    [pill addSubview:dot]; [pill addSubview:pillLab];
+    [NSLayoutConstraint activateConstraints:@[
+        [pill.widthAnchor constraintGreaterThanOrEqualToConstant:78],
+        [pill.heightAnchor constraintEqualToConstant:24],
+        [dot.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:8],
+        [dot.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
+        [dot.widthAnchor constraintEqualToConstant:8], [dot.heightAnchor constraintEqualToConstant:8],
+        [pillLab.leadingAnchor constraintEqualToAnchor:dot.trailingAnchor constant:5],
+        [pillLab.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-8],
+        [pillLab.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
+    ]];
     if (!active) {
-        CABasicAnimation *a=[CABasicAnimation animationWithKeyPath:@"opacity"]; a.fromValue=@1; a.toValue=@0.3; a.duration=0.9; a.autoreverses=YES; a.repeatCount=HUGE_VALF;
+        CABasicAnimation *a=[CABasicAnimation animationWithKeyPath:@"opacity"]; a.fromValue=@1; a.toValue=@0.35; a.duration=1.0; a.autoreverses=YES; a.repeatCount=HUGE_VALF; a.timingFunction=[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
         [dot.layer addAnimation:a forKey:@"pulse"];
     }
 
-    // Stats row – 3 boxes
+    UIStackView *topRow=[[UIStackView alloc] initWithArrangedSubviews:@[icon, textStack]];
+    topRow.translatesAutoresizingMaskIntoConstraints=NO; topRow.axis=UILayoutConstraintAxisHorizontal; topRow.spacing=10; topRow.alignment=UIStackViewAlignmentCenter;
+    // We need topRow + pill on same line: wrap in another stack
+    UIStackView *headerRow=[[UIStackView alloc] initWithArrangedSubviews:@[topRow, pill]];
+    headerRow.translatesAutoresizingMaskIntoConstraints=NO; headerRow.axis=UILayoutConstraintAxisHorizontal; headerRow.spacing=8; headerRow.alignment=UIStackViewAlignmentCenter; headerRow.distribution=UIStackViewDistributionEqualSpacing;
+
+    // Stats row
     NSUInteger totalCount=self.recordings.count; NSTimeInterval totalDur=0; unsigned long long totalSize=0;
     for (CRPRecordingItem *it in self.recordings) { totalDur+=it.duration; totalSize+=it.fileSize; }
-    NSString *sizeStr= totalSize >= 1024*1024 ? [NSString stringWithFormat:@"%.1f ميجا",(double)totalSize/(1024*1024)] : (totalSize>0?[NSString stringWithFormat:@"%.0f كيلو",(double)totalSize/1024]:@"—");
-    NSString *durStr= totalDur>0 ? [NSString stringWithFormat:@"%02ld:%02ld",(long)(totalDur/60),(long)((NSInteger)totalDur%60)] : @"—";
+    NSString *sizeStr;
+    if (totalSize==0) sizeStr=@"—";
+    else if (totalSize >= 1024*1024) sizeStr=[NSString stringWithFormat:@"%.1f MB", (double)totalSize/(1024.0*1024.0)];
+    else sizeStr=[NSString stringWithFormat:@"%.0f KB", (double)totalSize/1024.0];
+    NSString *durStr;
+    if (totalDur < 1) durStr=@"—";
+    else {
+        NSInteger m=(NSInteger)(totalDur/60), s=(NSInteger)totalDur % 60, h=(NSInteger)(totalDur/3600);
+        if (h>0) durStr=[NSString stringWithFormat:@"%ld:%02ld:%02ld",(long)h,(long)(m%60),(long)s];
+        else durStr=[NSString stringWithFormat:@"%02ld:%02ld",(long)m,(long)s];
+    }
+
+    UIView *statsRow=[[UIView alloc] init]; statsRow.translatesAutoresizingMaskIntoConstraints=NO;
+    UIStackView *statsStack=[[UIStackView alloc] init]; statsStack.translatesAutoresizingMaskIntoConstraints=NO; statsStack.axis=UILayoutConstraintAxisHorizontal; statsStack.distribution=UIStackViewDistributionFillEqually; statsStack.spacing=10;
+    [statsRow addSubview:statsStack];
+    [NSLayoutConstraint activateConstraints:@[
+        [statsStack.topAnchor constraintEqualToAnchor:statsRow.topAnchor],
+        [statsStack.bottomAnchor constraintEqualToAnchor:statsRow.bottomAnchor],
+        [statsStack.leadingAnchor constraintEqualToAnchor:statsRow.leadingAnchor],
+        [statsStack.trailingAnchor constraintEqualToAnchor:statsRow.trailingAnchor],
+        [statsRow.heightAnchor constraintEqualToConstant:64],
+    ]];
 
     NSArray *stats=@[
-        @{@"v": [NSString stringWithFormat:@"%lu",(unsigned long)totalCount], @"l": @"التسجيلات", @"i": @"number"},
-        @{@"v": durStr, @"l": @"المدة", @"i": @"clock"},
-        @{@"v": sizeStr, @"l": @"الحجم", @"i": @"internaldrive"},
+        @{@"v": [NSString stringWithFormat:@"%lu",(unsigned long)totalCount], @"l": @"التسجيلات", @"ico": @"waveform.badge.magnifyingglass"},
+        @{@"v": durStr, @"l": @"المدة", @"ico": @"clock"},
+        @{@"v": sizeStr, @"l": @"الحجم", @"ico": @"internaldrive"},
     ];
-    CGFloat boxW=(card.bounds.size.width-32)/3.0;
     for (int i=0;i<3;i++) {
-        CGFloat x=8 + boxW*i + 4;
-        UIView *box=[[UIView alloc] initWithFrame:CGRectMake(x,64,boxW-8,52)];
-        box.backgroundColor=[UIColor tertiarySystemGroupedBackgroundColor]; box.layer.cornerRadius=12;
-        [card addSubview:box];
-        UILabel *v=[[UILabel alloc] initWithFrame:CGRectMake(0,10,box.bounds.size.width,18)]; v.text=stats[i][@"v"]; v.font=[UIFont systemFontOfSize:15 weight:UIFontWeightBold]; v.textAlignment=NSTextAlignmentCenter; v.textColor=[UIColor labelColor]; [box addSubview:v];
-        UILabel *l=[[UILabel alloc] initWithFrame:CGRectMake(0,30,box.bounds.size.width,14)]; l.text=stats[i][@"l"]; l.font=[UIFont systemFontOfSize:10 weight:UIFontWeightMedium]; l.textAlignment=NSTextAlignmentCenter; l.textColor=[UIColor secondaryLabelColor]; [box addSubview:l];
+        UIView *box=[[UIView alloc] init]; box.backgroundColor=[UIColor tertiarySystemGroupedBackgroundColor]; box.layer.cornerRadius=13; box.layer.cornerCurve=kCACornerCurveContinuous; box.clipsToBounds=YES;
+        UIImageView *iv=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:stats[i][@"ico"]]];
+        iv.translatesAutoresizingMaskIntoConstraints=NO; iv.tintColor=[UIColor systemBlueColor]; iv.contentMode=UIViewContentModeScaleAspectFit;
+        iv.preferredSymbolConfiguration=[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightMedium];
+        UILabel *v=[[UILabel alloc] init]; v.translatesAutoresizingMaskIntoConstraints=NO; v.text=stats[i][@"v"]; v.font=[UIFont systemFontOfSize:15 weight:UIFontWeightBold]; v.textAlignment=NSTextAlignmentCenter; v.textColor=[UIColor labelColor]; v.adjustsFontSizeToFitWidth=YES; v.minimumScaleFactor=0.6;
+        UILabel *l=[[UILabel alloc] init]; l.translatesAutoresizingMaskIntoConstraints=NO; l.text=stats[i][@"l"]; l.font=[UIFont systemFontOfSize:10 weight:UIFontWeightMedium]; l.textAlignment=NSTextAlignmentCenter; l.textColor=[UIColor secondaryLabelColor];
+        [box addSubview:iv]; [box addSubview:v]; [box addSubview:l];
+        [NSLayoutConstraint activateConstraints:@[
+            [iv.topAnchor constraintEqualToAnchor:box.topAnchor constant:7],
+            [iv.centerXAnchor constraintEqualToAnchor:box.centerXAnchor],
+            [iv.widthAnchor constraintEqualToConstant:16], [iv.heightAnchor constraintEqualToConstant:16],
+            [v.topAnchor constraintEqualToAnchor:iv.bottomAnchor constant:3],
+            [v.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:4],
+            [v.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-4],
+            [l.topAnchor constraintEqualToAnchor:v.bottomAnchor constant:1],
+            [l.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:2],
+            [l.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-2],
+        ]];
+        [statsStack addArrangedSubview:box];
     }
+
+    // Assemble card content
+    UIStackView *cardStack=[[UIStackView alloc] initWithArrangedSubviews:@[headerRow, statsRow]];
+    cardStack.translatesAutoresizingMaskIntoConstraints=NO; cardStack.axis=UILayoutConstraintAxisVertical; cardStack.spacing=14;
+    [card addSubview:cardStack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:container.topAnchor constant:12],
+        [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-10],
+
+        [cardStack.topAnchor constraintEqualToAnchor:card.topAnchor constant:14],
+        [cardStack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14],
+        [cardStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14],
+        [cardStack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14],
+
+        [icon.widthAnchor constraintEqualToConstant:34], [icon.heightAnchor constraintEqualToConstant:34],
+    ]];
+
+    CGSize fitting=[container systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
+    if (fitting.height < 120) fitting.height=138;
+    container.frame=CGRectMake(0,0, self.tableView ? self.tableView.bounds.size.width : 390, fitting.height);
+
+    // Ensure RTL
+    container.semanticContentAttribute=UISemanticContentAttributeForceRightToLeft;
+    card.semanticContentAttribute=UISemanticContentAttributeForceRightToLeft;
+
     return container;
+}
+
+// Helper to refresh header with auto-layout sizing
+- (void)refreshHeader {
+    UIView *hdr=[self buildHeaderView];
+    // Use auto layout height: calculate via systemLayoutSizeFitting
+    CGFloat w = self.tableView.bounds.size.width;
+    if (w < 200) {
+        UIWindow *win = self.view.window;
+        if (!win) win = UIApplication.sharedApplication.keyWindow;
+        w = win ? win.bounds.size.width : 390;
+    }
+    hdr.frame=CGRectMake(0,0,w, hdr.frame.size.height);
+    // Force layout to get correct height
+    [hdr setNeedsLayout]; [hdr layoutIfNeeded];
+    CGSize sz=[hdr systemLayoutSizeFittingSize:CGSizeMake(w, UILayoutFittingCompressedSize.height) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    if (sz.height < 100) sz.height=140;
+    CGRect f=hdr.frame; f.size.height=sz.height; f.size.width=w; hdr.frame=f;
+    self.tableView.tableHeaderView=hdr;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title=@"مسجل المكالمات";
-    self.navigationController.navigationBar.prefersLargeTitles=YES;
-    self.navigationItem.largeTitleDisplayMode=UINavigationItemLargeTitleDisplayModeAlways;
+    if (@available(iOS 11.0, *)) {
+        self.navigationController.navigationBar.prefersLargeTitles=YES;
+        self.navigationItem.largeTitleDisplayMode=UINavigationItemLargeTitleDisplayModeAlways;
+    }
     gWeakPrefsController=self;
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, CRPPrefsPongCallback, CRP_PREFS_PONG_NOTIFICATION, NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
     UIBarButtonItem *refresh=[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.clockwise"] style:UIBarButtonItemStylePlain target:self action:@selector(loadRecordings)];
@@ -239,9 +355,12 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
 - (void)dealloc { CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, CRP_PREFS_PONG_NOTIFICATION, NULL); if (gWeakPrefsController==self) gWeakPrefsController=nil; [self stopPlayback]; }
 - (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self pingDaemons]; [self loadRecordings]; }
 - (void)viewWillDisappear:(BOOL)animated { [super viewWillDisappear:animated]; [self stopPlayback]; }
-- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; CGFloat inset = self.playerBar.hidden?0:116; self.tableView.contentInset=UIEdgeInsetsMake(0,0,inset,0); self.tableView.scrollIndicatorInsets=self.tableView.contentInset; }
+- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; CGFloat inset = self.playerBar.hidden?0:122; self.tableView.contentInset=UIEdgeInsetsMake(0,0,inset,0); self.tableView.scrollIndicatorInsets=self.tableView.contentInset; // keep header width in sync
+    if (self.headerContainer && fabs(self.headerContainer.frame.size.width - self.tableView.bounds.size.width) > 1) { [self refreshHeader]; }
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)prev { [super traitCollectionDidChange:prev]; [self refreshHeader]; }
 
-- (void)pingDaemons { self.pongCount=0; CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CRP_PREFS_PING_NOTIFICATION, NULL, NULL, true); dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.35*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{ [self.tableView reloadData]; }); }
+- (void)pingDaemons { self.pongCount=0; CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CRP_PREFS_PING_NOTIFICATION, NULL, NULL, true); dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.4*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{ [self.tableView reloadData]; [self refreshHeader]; }); }
 - (void)toggleEdit { BOOL ed=!self.tableView.isEditing; [self.tableView setEditing:ed animated:YES]; self.navigationItem.leftBarButtonItem.title=ed?@"تم":@"تعديل"; self.navigationItem.leftBarButtonItem.style=ed?UIBarButtonItemStyleDone:UIBarButtonItemStylePlain; }
 
 #pragma mark - Helpers
@@ -290,18 +409,16 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
         }
     }
     [self.recordings sortUsingComparator:^NSComparisonResult(CRPRecordingItem *a, CRPRecordingItem *b){ return [b.creationDate compare:a.creationDate]; }];
-    [self updateHeader];
+    [self refreshHeader];
     [self.tableView reloadData];
-    // Empty state handling
     if (self.recordings.count==0) {
         self.tableView.backgroundView=self.emptyView; self.emptyView.hidden=NO;
     } else {
         self.tableView.backgroundView=nil; self.emptyView.hidden=YES;
     }
 }
-- (void)updateHeader { self.tableView.tableHeaderView=[self buildHeaderView]; }
 
-#pragma mark - Menus & Diagnostics (simple)
+#pragma mark - Menus & Diagnostics
 
 - (void)showMoreMenu {
     UIAlertController *a=[UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
@@ -321,7 +438,7 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
 }
 
 - (NSString *)collectReport {
-    NSMutableString *r=[NSMutableString string]; [r appendString:@"مسجل المكالمات v1.3.3 — 16kHz mono — تشخيص\n"];
+    NSMutableString *r=[NSMutableString string]; [r appendString:@"مسجل المكالمات v1.3.4 — Native Rate — تشخيص\n"];
     [r appendFormat:@"الخدمات: %ld %@\n", (long)self.pongCount, self.pongCount>0?@"✅ نشطة":@"⚠️ غير نشطة - فعّل الحقن في RootHide"];
     if (self.pongCount==0) [r appendString:@"→ الإعدادات > RootHide Manager > فعّل mediaserverd / audiomxd / callservicesd / avconferenced ثم Respring.\n"];
     [r appendString:@"\nالتخزين:\n"]; NSFileManager *fm=[NSFileManager defaultManager];
@@ -334,7 +451,7 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
 }
 - (void)showDiagnostics {
     [self pingDaemons];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.4*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.45*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{
         NSString *report=[self collectReport];
         UIAlertController *a=[UIAlertController alertControllerWithTitle:@"التشخيص" message:report preferredStyle:UIAlertControllerStyleAlert];
         [a addAction:[UIAlertAction actionWithTitle:@"نسخ" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){ [UIPasteboard generalPasteboard].string=report; }]];
@@ -344,7 +461,7 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
     });
 }
 - (void)showTips {
-    UIAlertController *t=[UIAlertController alertControllerWithTitle:@"للحصول على صوت نقي" message:@"• لا تحتاج فتح السبيكر — التسجيل يلتقط الطرفين مباشرة\n• تأكد من تفعيل الحقن لـ audiomxd + mediaserverd + callservicesd في RootHide ثم Respring\n• بعد التثبيت اعمل Respring\n• الميك ON/OFF لم يعد يؤثر — التسجيل الآن أحادي 16kHz نقي بدون تشويش" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *t=[UIAlertController alertControllerWithTitle:@"للحصول على صوت نقي" message:@"• لا تحتاج فتح السبيكر — التسجيل يلتقط الطرفين مباشرة\n• تأكد من تفعيل الحقن لـ audiomxd + mediaserverd + callservicesd في RootHide ثم Respring\n• بعد التثبيت اعمل Respring\n• الميك ON/OFF لم يعد يسبب تشويش — التسجيل يحفظ بالمعدل الأصلي بدون تسريع" preferredStyle:UIAlertControllerStyleAlert];
     [t addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:t animated:YES completion:nil];
 }
@@ -356,14 +473,16 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
     [self presentViewController:c animated:YES completion:nil];
 }
 
-#pragma mark - Playback (smooth)
+#pragma mark - Playback
 
 - (void)stopPlayback { if (self.progressTimer) { [self.progressTimer invalidate]; self.progressTimer=nil; } if (self.audioPlayer.isPlaying) [self.audioPlayer stop]; self.audioPlayer=nil; self.currentlyPlayingPath=nil; [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil]; [self.playPauseBtn setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal]; [self.tableView reloadData]; }
-- (void)hidePlayer { if (self.playerBar.hidden) return; [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{ self.playerBar.alpha=0; } completion:^(BOOL f){ self.playerBar.hidden=YES; self.playerBar.alpha=1; [self.view setNeedsLayout]; [self.view layoutIfNeeded]; }]; [self stopPlayback]; }
+- (void)hidePlayer { if (self.playerBar.hidden) return; [UIView animateWithDuration:0.28 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{ self.playerBar.alpha=0; } completion:^(BOOL f){ self.playerBar.hidden=YES; self.playerBar.alpha=1; [self.view setNeedsLayout]; [self.view layoutIfNeeded]; }]; [self stopPlayback]; }
 - (void)showPlayerForItem:(CRPRecordingItem *)item {
-    self.playerBar.hidden=NO; self.playerBar.alpha=1; [self.view bringSubviewToFront:self.playerBar];
+    self.playerBar.hidden=NO;
     self.nowPlayingLabel.text=[NSString stringWithFormat:@"%@ • %@", item.displayName ?: item.fileName, [self formattedDuration:item.duration]];
     self.durationLabel.text=[self formattedDuration:item.duration]; self.currentTimeLabel.text=@"00:00"; self.progressSlider.value=0;
+    [self.view bringSubviewToFront:self.playerBar];
+    [UIView animateWithDuration:0.28 animations:^{ self.playerBar.alpha=1; }];
     [self.view setNeedsLayout];
 }
 - (void)playRecordingAtPath:(NSString *)path item:(CRPRecordingItem *)item {
@@ -399,27 +518,41 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
     [confirm addAction:[UIAlertAction actionWithTitle:@"حذف" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){ [[NSFileManager defaultManager] removeItemAtPath:path error:nil]; NSString *json=[[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; [[NSFileManager defaultManager] removeItemAtPath:json error:nil]; [self hidePlayer]; [self loadRecordings]; }]];
     [self presentViewController:confirm animated:YES completion:nil];
 }
-- (NSString *)formattedSize:(unsigned long long)bytes { if (bytes>=1024*1024) return [NSString stringWithFormat:@"%.1f ميجا",(double)bytes/(1024.0*1024)]; return [NSString stringWithFormat:@"%.0f كيلو",(double)bytes/1024.0]; }
-- (NSString *)formattedDuration:(NSTimeInterval)s { NSInteger t=(NSInteger)(s+0.5); return [NSString stringWithFormat:@"%02ld:%02ld",(long)(t/60),(long)(t%60)]; }
+- (NSString *)formattedSize:(unsigned long long)bytes { if (bytes>=1024*1024) return [NSString stringWithFormat:@"%.1f MB",(double)bytes/(1024.0*1024)]; return [NSString stringWithFormat:@"%.0f KB",(double)bytes/1024.0]; }
+- (NSString *)formattedDuration:(NSTimeInterval)s { NSInteger t=(NSInteger)(s+0.5); if (t>=3600) return [NSString stringWithFormat:@"%02ld:%02ld:%02ld",(long)(t/3600),(long)((t%3600)/60),(long)(t%60)]; return [NSString stringWithFormat:@"%02ld:%02ld",(long)(t/60),(long)(t%60)]; }
 
-#pragma mark - Table (clean, simple)
+#pragma mark - Table
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { if (section==0) return 1; return (NSInteger)self.recordings.count; }
-- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)section { return section==0?@"الإعدادات السريعة": (self.recordings.count>0? [NSString stringWithFormat:@"التسجيلات — %lu",(unsigned long)self.recordings.count] : @"التسجيلات"); }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { if (section==0) return 2; return (NSInteger)self.recordings.count; }
+- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)section { return section==0?@"الإعدادات" : (self.recordings.count>0? [NSString stringWithFormat:@"التسجيلات — %lu",(unsigned long)self.recordings.count] : @"التسجيلات"); }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)section {
-    if (section==0) return @"التسجيل يعمل تلقائياً بدون سبيكر. فعّل الحقن لـ audiomxd / mediaserverd / callservicesd في RootHide Manager ثم Respring.";
-    NSString *primary=[self candidateDirectories].firstObject?:@"/var/mobile/Library/CallRecordings";
-    return [NSString stringWithFormat:@"اضغط للتشغيل • اسحب لليسار للحذف أو المشاركة • اضغط مطولاً لإعادة التسمية\n%@", primary];
+    if (section==0) {
+        NSString *primary=[self candidateDirectories].firstObject?:@"/var/mobile/Library/CallRecordings";
+        return [NSString stringWithFormat:@"التخزين: %@\nاضغط مطولاً على المسار للنسخ — التسجيل يعمل بدون سبيكر", primary];
+    }
+    if (self.recordings.count==0) return nil;
+    return @"اضغط للتشغيل • اسحب لليسار للحذف أو المشاركة • اضغط مطولاً لإعادة التسمية";
 }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.section==0) {
-        static NSString *sid=@"SettingsCell"; UITableViewCell *cell=[tv dequeueReusableCellWithIdentifier:sid]; if (!cell) cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:sid];
-        cell.textLabel.text=@"تحسين الصوت التلقائي"; cell.textLabel.font=[UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-        cell.imageView.image=[UIImage systemImageNamed:@"waveform.path.ecg"]; cell.imageView.tintColor=[UIColor systemBlueColor];
-        UISwitch *sw=[[UISwitch alloc] init]; sw.on=[[self prefs] boolForKey:@"CRPHQGainEnabled"]; if (![[self prefs] objectForKey:@"CRPHQGainEnabled"]) sw.on=YES; sw.onTintColor=[UIColor systemBlueColor]; [sw addTarget:self action:@selector(gainSwitchChanged:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView=sw;
-        cell.detailTextLabel.text=sw.isOn?@"مفعّل":@"متوقف"; cell.selectionStyle=UITableViewCellSelectionStyleNone;
-        return cell;
+        if (ip.row==0) {
+            static NSString *sid=@"SettingsCell0"; UITableViewCell *cell=[tv dequeueReusableCellWithIdentifier:sid]; if (!cell) cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:sid];
+            cell.textLabel.text=@"تحسين الصوت التلقائي"; cell.textLabel.font=[UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+            cell.imageView.image=[UIImage systemImageNamed:@"waveform.path.ecg"]; cell.imageView.tintColor=[UIColor systemBlueColor];
+            UISwitch *sw=[[UISwitch alloc] init]; sw.on=[[self prefs] boolForKey:@"CRPHQGainEnabled"]; if (![[self prefs] objectForKey:@"CRPHQGainEnabled"]) sw.on=YES; sw.onTintColor=[UIColor systemBlueColor]; [sw addTarget:self action:@selector(gainSwitchChanged:) forControlEvents:UIControlEventValueChanged]; cell.accessoryView=sw;
+            cell.detailTextLabel.text=sw.isOn?@"مفعّل":@"متوقف"; cell.selectionStyle=UITableViewCellSelectionStyleNone;
+            return cell;
+        } else {
+            static NSString *sid2=@"PathCell"; UITableViewCell *cell=[tv dequeueReusableCellWithIdentifier:sid2]; if (!cell) cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:sid2];
+            NSString *primary=[self candidateDirectories].firstObject?:@"/var/mobile/Library/CallRecordings";
+            cell.textLabel.text=@"مجلد التسجيلات"; cell.textLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightSemibold]; cell.textLabel.textColor=[UIColor secondaryLabelColor];
+            cell.detailTextLabel.text=primary; cell.detailTextLabel.font=[UIFont systemFontOfSize:11 weight:UIFontWeightRegular]; cell.detailTextLabel.textColor=[UIColor tertiaryLabelColor]; cell.detailTextLabel.numberOfLines=0; cell.detailTextLabel.lineBreakMode=NSLineBreakByCharWrapping;
+            cell.imageView.image=[UIImage systemImageNamed:@"folder"]; cell.imageView.tintColor=[UIColor systemOrangeColor];
+            cell.accessoryType=UITableViewCellAccessoryNone;
+            cell.selectionStyle=UITableViewCellSelectionStyleDefault;
+            return cell;
+        }
     }
     static NSString *kCell=@"RecCell";
     UITableViewCell *cell=[tv dequeueReusableCellWithIdentifier:kCell]; if (!cell) cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:kCell];
@@ -429,19 +562,32 @@ static void CRPPrefsPongCallback(CFNotificationCenterRef center, void *observer,
     NSString *title=item.displayName ?: item.fileName;
     cell.textLabel.text= isPlaying? [NSString stringWithFormat:@"⏸ %@", title] : title;
     cell.textLabel.font=[UIFont systemFontOfSize:14 weight:isPlaying?UIFontWeightBold:UIFontWeightSemibold]; cell.textLabel.textColor=isPlaying?[UIColor systemBlueColor]:[UIColor labelColor]; cell.textLabel.numberOfLines=1;
-    NSDateFormatter *df=[[NSDateFormatter alloc] init]; df.dateStyle=NSDateFormatterShortStyle; df.timeStyle=NSDateFormatterShortStyle;
+    NSDateFormatter *df=[[NSDateFormatter alloc] init]; df.dateStyle=NSDateFormatterShortStyle; df.timeStyle=NSDateFormatterShortStyle; df.locale=[NSLocale localeWithLocaleIdentifier:@"ar_IQ"];
     NSString *dateStr=[df stringFromDate:item.creationDate];
     cell.detailTextLabel.text=[NSString stringWithFormat:@"%@ • %@ • %@", dateStr, [self formattedDuration:item.duration], [self formattedSize:item.fileSize]];
-    cell.detailTextLabel.textColor=[UIColor secondaryLabelColor]; cell.detailTextLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightRegular]; cell.detailTextLabel.numberOfLines=1;
+    cell.detailTextLabel.textColor=[UIColor secondaryLabelColor]; cell.detailTextLabel.font=[UIFont systemFontOfSize:11.5 weight:UIFontWeightRegular]; cell.detailTextLabel.numberOfLines=1;
     cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
     return cell;
 }
 - (void)gainSwitchChanged:(UISwitch *)sw { [[self prefs] setBool:sw.isOn forKey:@"CRPHQGainEnabled"]; [[self prefs] synchronize]; CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.relaxin.callrecorder/prefsChanged"), NULL, NULL, true); [self.tableView reloadData]; }
-- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip { [tv deselectRowAtIndexPath:ip animated:YES]; if (ip.section==0) return; CRPRecordingItem *item=self.recordings[ip.row]; [self playRecordingAtPath:item.filePath item:item]; }
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section==0) {
+        if (ip.row==1) {
+            NSString *primary=[self candidateDirectories].firstObject?:@"/var/mobile/Library/CallRecordings";
+            UIPasteboard.generalPasteboard.string=primary;
+            UIAlertController *c=[UIAlertController alertControllerWithTitle:@"تم نسخ المسار" message:primary preferredStyle:UIAlertControllerStyleAlert];
+            [c addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:c animated:YES completion:nil];
+        }
+        return;
+    }
+    CRPRecordingItem *item=self.recordings[ip.row]; [self playRecordingAtPath:item.filePath item:item];
+}
 - (BOOL)tableView:(UITableView *)tv canEditRowAtIndexPath:(NSIndexPath *)ip { return ip.section==1; }
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tv editingStyleForRowAtIndexPath:(NSIndexPath *)ip { return ip.section==1?UITableViewCellEditingStyleDelete:UITableViewCellEditingStyleNone; }
 - (void)tableView:(UITableView *)tv commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)ip { if (style==UITableViewCellEditingStyleDelete && ip.section==1) [self deleteRecordingAtIndexPath:ip inTableView:tv]; }
-- (void)deleteRecordingAtIndexPath:(NSIndexPath *)ip inTableView:(UITableView *)tv { if (ip.section!=1 || ip.row<0 || ip.row>=(NSInteger)self.recordings.count) return; CRPRecordingItem *item=self.recordings[ip.row]; if ([self.currentlyPlayingPath isEqualToString:item.filePath]) [self hidePlayer]; [[NSFileManager defaultManager] removeItemAtPath:item.filePath error:nil]; NSString *json=[[item.filePath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; [[NSFileManager defaultManager] removeItemAtPath:json error:nil]; [self.recordings removeObjectAtIndex:ip.row]; [tv deleteRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationAutomatic]; [self updateHeader]; if (self.recordings.count==0) { self.tableView.backgroundView=self.emptyView; self.emptyView.hidden=NO; } }
+- (void)deleteRecordingAtIndexPath:(NSIndexPath *)ip inTableView:(UITableView *)tv { if (ip.section!=1 || ip.row<0 || ip.row>=(NSInteger)self.recordings.count) return; CRPRecordingItem *item=self.recordings[ip.row]; if ([self.currentlyPlayingPath isEqualToString:item.filePath]) [self hidePlayer]; [[NSFileManager defaultManager] removeItemAtPath:item.filePath error:nil]; NSString *json=[[item.filePath stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]; [[NSFileManager defaultManager] removeItemAtPath:json error:nil]; [self.recordings removeObjectAtIndex:ip.row]; [tv deleteRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationAutomatic]; [self refreshHeader]; if (self.recordings.count==0) { self.tableView.backgroundView=self.emptyView; self.emptyView.hidden=NO; } }
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tv trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
     if (ip.section!=1) return nil; __weak typeof(self) weakSelf=self;
     UIContextualAction *del=[UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"حذف" handler:^(UIContextualAction *a, UIView *v, void(^c)(BOOL)){ [weakSelf deleteRecordingAtIndexPath:ip inTableView:tv]; c(YES); }]; del.image=[UIImage systemImageNamed:@"trash"];

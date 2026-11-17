@@ -1,8 +1,8 @@
 Package: com.relaxin.callrecorder
 Name: CallRecorder
-Version: 1.3.3
+Version: 1.3.4
 Architecture: iphoneos-arm64e
-Description: Full-stack iOS Call Recorder Tweak for Relaxin RootHide (iOS 15.0 - 18.7, arm64e). Fix mic distortion, clear 16k mono & smooth Arabic UI.
+Description: Full-stack iOS Call Recorder Tweak for Relaxin RootHide (iOS 15.0 - 18.7, arm64e). v1.3.4 native rate (no fast audio), no dial freeze, modern prefs UI.
 Maintainer: Relaxin
 Author: Relaxin
 Section: Tweaks
