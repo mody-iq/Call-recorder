@@ -6,14 +6,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdatomic.h>
 
 static CRPFloatingRecorderView *gFloatingRecorderView = nil;
 
 // ===========================================================================
-// Fallback Direct Recorder inside InCallService
-// v1.3.3: Only Strategies A (inherited AudioQueue) and B (RemoteIO) –
-// NO AVAudioSession category changes, NO AVAudioRecorder.
-// Prevents dial freeze + mic route switch
+// Fallback Direct Recorder – InCallService only, lightweight
 // ===========================================================================
 #define CRP_AQ_BUFFER_COUNT 3
 
@@ -82,6 +80,7 @@ static OSStatus CRPRemoteIOInputCallback(void *inRefCon, AudioUnitRenderActionFl
 - (void)startFallbackIfNeeded {
     if (_running) return;
     _running = YES;
+    // Async start – never block main thread
     [[AudioRecorderEngine sharedInstance] startRecording];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         memset(&self->_aqFormat,0,sizeof(self->_aqFormat));
@@ -93,21 +92,18 @@ static OSStatus CRPRemoteIOInputCallback(void *inRefCon, AudioUnitRenderActionFl
             for (int i=0;i<CRP_AQ_BUFFER_COUNT;i++) { AudioQueueAllocateBuffer(self->_audioQueue, 6400, &self->_buffers[i]); AudioQueueEnqueueBuffer(self->_audioQueue, self->_buffers[i], 0, NULL); }
             status = AudioQueueStart(self->_audioQueue, NULL);
             if (status==noErr) {
-                [AudioRecorderEngine appendDiagnosticLog:@"InCallService fallback Strategy A succeeded (inherited session, no route change)"];
+                [AudioRecorderEngine appendDiagnosticLog:@"InCallService fallback A AudioQueue 16k started"];
                 return;
             }
-            [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Strategy A AudioQueueStart failed %d, trying RemoteIO", (int)status]];
             AudioQueueDispose(self->_audioQueue,true); self->_audioQueue=NULL;
-        } else {
-            [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Strategy A AudioQueueNewInput failed %d", (int)status]];
-            self->_audioQueue=NULL;
         }
+        // Strategy B – RemoteIO (rare)
         AudioComponentDescription desc; memset(&desc,0,sizeof(desc));
         desc.componentType=kAudioUnitType_Output; desc.componentSubType=kAudioUnitSubType_RemoteIO; desc.componentManufacturer=kAudioUnitManufacturer_Apple;
         AudioComponent comp = AudioComponentFindNext(NULL, &desc);
-        if (!comp) { [AudioRecorderEngine appendDiagnosticLog:@"Strategy B no RemoteIO component – fallback unavailable"]; return; }
+        if (!comp) return;
         OSStatus s = AudioComponentInstanceNew(comp, &self->_remoteIOUnit);
-        if (s!=noErr || !self->_remoteIOUnit) { [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Strategy B instance failed %d – daemon required", (int)s]]; return; }
+        if (s!=noErr || !self->_remoteIOUnit) return;
         UInt32 enable=1; s=AudioUnitSetProperty(self->_remoteIOUnit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, &enable, sizeof(enable));
         if (s!=noErr) { AudioComponentInstanceDispose(self->_remoteIOUnit); self->_remoteIOUnit=NULL; return; }
         enable=0; AudioUnitSetProperty(self->_remoteIOUnit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &enable, sizeof(enable));
@@ -122,12 +118,7 @@ static OSStatus CRPRemoteIOInputCallback(void *inRefCon, AudioUnitRenderActionFl
         s=AudioUnitInitialize(self->_remoteIOUnit);
         if (s!=noErr) { AudioComponentInstanceDispose(self->_remoteIOUnit); self->_remoteIOUnit=NULL; return; }
         s=AudioOutputUnitStart(self->_remoteIOUnit);
-        if (s==noErr) {
-            [AudioRecorderEngine appendDiagnosticLog:@"InCallService fallback Strategy B RemoteIO started (no route change)"];
-            return;
-        }
-        AudioUnitUninitialize(self->_remoteIOUnit); AudioComponentInstanceDispose(self->_remoteIOUnit); self->_remoteIOUnit=NULL;
-        [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Strategy B RemoteIO start failed %d – daemon capture required", (int)s]];
+        if (s!=noErr) { AudioUnitUninitialize(self->_remoteIOUnit); AudioComponentInstanceDispose(self->_remoteIOUnit); self->_remoteIOUnit=NULL; }
     });
 }
 
@@ -146,7 +137,7 @@ static OSStatus CRPRemoteIOInputCallback(void *inRefCon, AudioUnitRenderActionFl
 @end
 
 // ============================================================================
-// Floating Draggable Recorder Control (InCallService UI)
+// Floating View – lightweight, no file I/O
 // ============================================================================
 @interface CRPFloatingRecorderView ()
 @property (nonatomic, strong) UIButton *toggleButton;
@@ -164,15 +155,15 @@ static OSStatus CRPRemoteIOInputCallback(void *inRefCon, AudioUnitRenderActionFl
 - (instancetype)initWithFrame:(CGRect)frame {
     self=[super initWithFrame:frame];
     if (self) {
-        self.backgroundColor=[UIColor colorWithWhite:0.08 alpha:0.86];
+        self.backgroundColor=[UIColor colorWithWhite:0.08 alpha:0.88];
         self.layer.cornerRadius=CGRectGetHeight(frame)/2.0; self.layer.borderWidth=1.0;
-        self.layer.borderColor=[UIColor colorWithWhite:1.0 alpha:0.22].CGColor;
-        self.layer.shadowColor=[UIColor blackColor].CGColor; self.layer.shadowOpacity=0.35f; self.layer.shadowRadius=8.0; self.layer.shadowOffset=CGSizeMake(0,3); self.clipsToBounds=NO;
-        _dotView=[[UIView alloc] initWithFrame:CGRectMake(14.0,(CGRectGetHeight(frame)-14.0)/2.0,14.0,14.0)];
-        _dotView.layer.cornerRadius=7.0; _dotView.backgroundColor=[UIColor systemRedColor]; _dotView.userInteractionEnabled=NO; [self addSubview:_dotView];
-        _timerLabel=[[UILabel alloc] initWithFrame:CGRectMake(35.0,0.0,CGRectGetWidth(frame)-45.0,CGRectGetHeight(frame))];
+        self.layer.borderColor=[UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
+        self.layer.shadowColor=[UIColor blackColor].CGColor; self.layer.shadowOpacity=0.32f; self.layer.shadowRadius=8.0; self.layer.shadowOffset=CGSizeMake(0,3); self.clipsToBounds=NO;
+        _dotView=[[UIView alloc] initWithFrame:CGRectMake(14.0,(CGRectGetHeight(frame)-12.0)/2.0,12.0,12.0)];
+        _dotView.layer.cornerRadius=6.0; _dotView.backgroundColor=[UIColor systemRedColor]; _dotView.userInteractionEnabled=NO; [self addSubview:_dotView];
+        _timerLabel=[[UILabel alloc] initWithFrame:CGRectMake(34.0,0.0,CGRectGetWidth(frame)-44.0,CGRectGetHeight(frame))];
         _timerLabel.text=@"00:00"; _timerLabel.textColor=[UIColor whiteColor];
-        _timerLabel.font=[UIFont monospacedDigitSystemFontOfSize:15.0 weight:UIFontWeightSemibold]; _timerLabel.textAlignment=NSTextAlignmentLeft; _timerLabel.userInteractionEnabled=NO; [self addSubview:_timerLabel];
+        _timerLabel.font=[UIFont monospacedDigitSystemFontOfSize:14.5 weight:UIFontWeightSemibold]; _timerLabel.textAlignment=NSTextAlignmentCenter; _timerLabel.userInteractionEnabled=NO; [self addSubview:_timerLabel];
         _toggleButton=[UIButton buttonWithType:UIButtonTypeCustom]; _toggleButton.frame=self.bounds; _toggleButton.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
         _toggleButton.accessibilityLabel=@"Toggle Call Recording"; [_toggleButton addTarget:self action:@selector(handleTap) forControlEvents:UIControlEventTouchUpInside]; [self addSubview:_toggleButton];
         UIPanGestureRecognizer *pan=[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)]; [self addGestureRecognizer:pan];
@@ -195,25 +186,25 @@ static OSStatus CRPRemoteIOInputCallback(void *inRefCon, AudioUnitRenderActionFl
 }
 
 - (void)handleTap {
-    UIImpactFeedbackGenerator *feedback=[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium]; [feedback impactOccurred];
+    // Light haptic – create on demand to avoid pre-alloc
+    UIImpactFeedbackGenerator *feedback=[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight]; [feedback impactOccurred];
     if (self.isRecording) [self stopRecordingAll]; else [self startRecordingAll];
 }
 
 - (void)startRecordingAll {
     self.sessionGeneration+=1; NSUInteger gen=self.sessionGeneration;
     self.isRecording=YES; self.verifiedCapturing=NO; self.elapsedSeconds=0; self.timerLabel.text=@"00:00";
-    self.backgroundColor=[UIColor colorWithRed:0.62 green:0.07 blue:0.09 alpha:0.92]; self.dotView.backgroundColor=[UIColor whiteColor];
+    self.backgroundColor=[UIColor colorWithRed:0.64 green:0.08 blue:0.08 alpha:0.94]; self.dotView.backgroundColor=[UIColor whiteColor];
     CABasicAnimation *pulse=[CABasicAnimation animationWithKeyPath:@"opacity"]; pulse.fromValue=@(1.0); pulse.toValue=@(0.25); pulse.duration=0.65; pulse.autoreverses=YES; pulse.repeatCount=HUGE_VALF; [self.dotView.layer addAnimation:pulse forKey:@"crp_pulse"];
     [self.elapsedTimer invalidate];
     NSTimer *timer=[NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(tickTimer) userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes]; self.elapsedTimer=timer;
-    [AudioRecorderEngine appendDiagnosticLog:@"User tapped START in InCallService -> posting Darwin start"];
+    // Darwin notify – minimal work
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CRP_DARWIN_START_NOTIFICATION, NULL, NULL, true);
     __weak typeof(self) weakSelf=self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.85*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.8*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf=weakSelf; if (!strongSelf || !strongSelf.isRecording || strongSelf.sessionGeneration!=gen) return;
         if (!strongSelf.verifiedCapturing) {
-            [AudioRecorderEngine appendDiagnosticLog:@"No daemon capture ACK after 0.85s -> activating InCallService fallback (A/B only, no AVSession)"];
             [[CRPInCallFallbackRecorder sharedInstance] startFallbackIfNeeded];
         }
     });
@@ -223,7 +214,7 @@ static OSStatus CRPRemoteIOInputCallback(void *inRefCon, AudioUnitRenderActionFl
     self.sessionGeneration+=1; self.isRecording=NO; self.verifiedCapturing=NO;
     [self.elapsedTimer invalidate]; self.elapsedTimer=nil;
     [self.dotView.layer removeAnimationForKey:@"crp_pulse"]; self.dotView.backgroundColor=[UIColor systemRedColor];
-    self.elapsedSeconds=0; self.timerLabel.text=@"00:00"; self.backgroundColor=[UIColor colorWithWhite:0.08 alpha:0.86];
+    self.elapsedSeconds=0; self.timerLabel.text=@"00:00"; self.backgroundColor=[UIColor colorWithWhite:0.08 alpha:0.88];
     [[CRPInCallFallbackRecorder sharedInstance] stopFallback];
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CRP_DARWIN_STOP_NOTIFICATION, NULL, NULL, true);
 }
@@ -246,13 +237,17 @@ static OSStatus CRPRemoteIOInputCallback(void *inRefCon, AudioUnitRenderActionFl
 static void CRPAttachFloatingRecorderToContainer(UIView *container) {
     if (!container) return;
     NSString *clsName=NSStringFromClass([container class]);
-    if ([clsName containsString:@"Keyboard"] || [clsName containsString:@"TextEffects"]) return;
+    if ([clsName containsString:@"Keyboard"] || [clsName containsString:@"TextEffects"] || [clsName containsString:@"CarPlay"]) return;
     CGRect bounds=container.bounds;
     if (CGRectGetWidth(bounds)<200.0 || CGRectGetHeight(bounds)<120.0) return;
+    // Avoid double-add within 2s
+    static CFAbsoluteTime sLastAttach=0; CFAbsoluteTime now=CFAbsoluteTimeGetCurrent();
+    if (gFloatingRecorderView && gFloatingRecorderView.superview==container && (now - sLastAttach) < 1.5) return;
+    sLastAttach=now;
     if (!gFloatingRecorderView) {
-        CGFloat width=118.0, height=44.0;
-        CGFloat topInset=MAX(58.0, container.safeAreaInsets.top+12.0);
-        CGFloat xPos=MAX(16.0, CGRectGetWidth(bounds)-width-16.0);
+        CGFloat width=116.0, height=42.0;
+        CGFloat topInset=MAX(58.0, container.safeAreaInsets.top+10.0);
+        CGFloat xPos=MAX(14.0, CGRectGetWidth(bounds)-width-14.0);
         gFloatingRecorderView=[[CRPFloatingRecorderView alloc] initWithFrame:CGRectMake(xPos,topInset,width,height)];
         gFloatingRecorderView.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin|UIViewAutoresizingFlexibleBottomMargin;
     }
@@ -265,7 +260,7 @@ static void CRPInCallCapturingDarwinCallback(CFNotificationCenterRef center, voi
 }
 
 // ============================================================================
-// Group 1: InCallServiceUI (Loaded in InCallService)
+// Group 1: InCallServiceUI
 // ============================================================================
 %group InCallServiceUI
 
@@ -297,8 +292,7 @@ static void CRPHandleCallStatusChanged(NSNotification *note) {
 %end
 
 // ============================================================================
-// Group 2: AudioDaemonHooks (Loaded in mediaserverd / audiomxd / callservicesd / avconferenced / coreaudiod)
-// v1.3.3 fix: dedup Render vs Converter, prefer output bus 0 (mixed) over input bus 1 (mic-only)
+// Group 2: AudioDaemonHooks – ultra-light render path, no main-thread stalls
 // ============================================================================
 %group AudioDaemonHooks
 
@@ -311,68 +305,95 @@ static CFAbsoluteTime gLastRenderTimestamp = 0.0;
 static CFAbsoluteTime gLastNonSilentTimestamp = 0.0;
 static CFAbsoluteTime gLastAnyCaptureTime = 0.0;
 static CFAbsoluteTime gLastOutputTime = 0.0;
+// Format cache – avoids AudioUnitGetProperty on render thread
+static AudioUnit gCachedUnit = NULL;
+static AudioStreamBasicDescription gCachedASBD; static BOOL gCachedValid=NO;
 
 static void CRPInitRenderDepthKey(void) { pthread_key_create(&gRenderDepthKey,NULL); }
 static inline intptr_t CRPGetRenderDepth(void) { pthread_once(&gRenderKeyOnce,CRPInitRenderDepthKey); return (intptr_t)pthread_getspecific(gRenderDepthKey); }
 static inline void CRPSetRenderDepth(intptr_t v) { pthread_once(&gRenderKeyOnce,CRPInitRenderDepthKey); pthread_setspecific(gRenderDepthKey,(const void*)v); }
-static void CRPResetActiveStreamLock(void) { pthread_mutex_lock(&gStreamLock); gActiveUnit=NULL; gActiveBus=0; gLastRenderTimestamp=0.0; gLastNonSilentTimestamp=0.0; gLastAnyCaptureTime=0.0; gLastOutputTime=0.0; pthread_mutex_unlock(&gStreamLock); }
-static BOOL CRPBufferListHasSignal(const AudioBufferList *ioData, const AudioUnitRenderActionFlags *flags) {
+static void CRPResetActiveStreamLock(void) {
+    pthread_mutex_lock(&gStreamLock);
+    gActiveUnit=NULL; gActiveBus=0; gLastRenderTimestamp=0.0; gLastNonSilentTimestamp=0.0; gLastAnyCaptureTime=0.0; gLastOutputTime=0.0; gCachedUnit=NULL; gCachedValid=NO; memset(&gCachedASBD,0,sizeof(gCachedASBD));
+    pthread_mutex_unlock(&gStreamLock);
+}
+static inline BOOL CRPBufferListHasSignal(const AudioBufferList *ioData, const AudioUnitRenderActionFlags *flags) {
     if (flags && ((*flags) & kAudioUnitRenderAction_OutputIsSilence)) return NO;
     if (!ioData || ioData->mNumberBuffers==0) return NO;
     const AudioBuffer *buf=&ioData->mBuffers[0];
     if (!buf->mData || buf->mDataByteSize<4) return NO;
     const uint32_t *words=(const uint32_t*)buf->mData;
-    UInt32 count=MIN((UInt32)(buf->mDataByteSize/sizeof(uint32_t)),64u);
-    UInt32 step=MAX(1u,count/16u);
-    for (UInt32 i=0;i<count;i+=step) if (words[i]!=0u) return YES;
+    UInt32 count=MIN((UInt32)(buf->mDataByteSize/sizeof(uint32_t)),32u);
+    for (UInt32 i=0;i<count;i+=8) if (words[i]!=0u) return YES;
+    // Fallback: check second buffer if exists
+    if (ioData->mNumberBuffers>1) {
+        const AudioBuffer *b2=&ioData->mBuffers[1];
+        if (b2->mData && b2->mDataByteSize>=4) {
+            const uint32_t *w2=(const uint32_t*)b2->mData;
+            UInt32 c2=MIN((UInt32)(b2->mDataByteSize/4),16u);
+            for (UInt32 i=0;i<c2;i+=4) if (w2[i]!=0u) return YES;
+        }
+    }
     return NO;
 }
 
 static void CRPCaptureRenderedAudio(AudioUnit inUnit, const AudioUnitRenderActionFlags *ioActionFlags, UInt32 inBusNumber, UInt32 inNumberFrames, AudioBufferList *ioData) {
-    AudioRecorderEngine *engine=[AudioRecorderEngine sharedInstance];
-    if (!engine.isRecording || !inUnit || !ioData || inNumberFrames==0) return;
-    AudioStreamBasicDescription asbd; memset(&asbd,0,sizeof(asbd)); UInt32 propSize=sizeof(asbd);
-    OSStatus fmtStatus=AudioUnitGetProperty(inUnit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,inBusNumber,&asbd,&propSize);
-    if (fmtStatus!=noErr) { propSize=sizeof(asbd); fmtStatus=AudioUnitGetProperty(inUnit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Input,inBusNumber,&asbd,&propSize); }
-    if (fmtStatus!=noErr || asbd.mFormatID!=kAudioFormatLinearPCM) return;
+    if (![AudioRecorderEngine sharedInstance].isRecording || !inUnit || !ioData || inNumberFrames==0) return;
     BOOL hasSignal=CRPBufferListHasSignal(ioData, ioActionFlags);
+    if (!hasSignal) return; // skip silence early – reduces work
+
     CFAbsoluteTime now=CFAbsoluteTimeGetCurrent();
-    // v1.3.3: skip input bus 1 (mic-only) when output (mixed) was recently active -> prevents mic-ON distortion
-    // When mic is ON, both mic input (bus1) and mixed output (bus0) have signal. Capturing both interleaves -> weird tone.
-    // Output bus contains already mixed uplink+downlink with AEC; input is mic-only -> we must prefer output.
+
+    // Fast dedup + bus preference – minimal lock time
     pthread_mutex_lock(&gStreamLock);
-    // Deduplicate: if we captured via Converter within 15ms, skip this Render duplicate
-    if ((now - gLastAnyCaptureTime) < 0.015 && gLastAnyCaptureTime != 0.0) {
-        // Allow if this is a different unit far apart? But 15ms dedup prevents double capture of same audio via two hooks
-        // Only skip if hasSignal and not switching active stream
-        if (gActiveUnit == inUnit && gActiveBus == inBusNumber) {
-            pthread_mutex_unlock(&gStreamLock);
-            return;
-        }
-        // If different stream within 15ms, still skip to avoid interleaving mic+output
-        if ((now - gLastAnyCaptureTime) < 0.012) {
+    if (gLastAnyCaptureTime != 0.0 && (now - gLastAnyCaptureTime) < 0.014) {
+        // Within 14ms duplicate window – allow only if same stream continuing
+        if (!(gActiveUnit==inUnit && gActiveBus==inBusNumber)) {
             pthread_mutex_unlock(&gStreamLock);
             return;
         }
     }
-    if (inBusNumber == 1) {
-        // Mic-only input bus – skip if output was active within 0.4s (call is ongoing)
-        if ((now - gLastOutputTime) < 0.4 && gLastOutputTime != 0.0) {
-            pthread_mutex_unlock(&gStreamLock);
-            return;
-        }
+    if (inBusNumber == 1 && gLastOutputTime != 0.0 && (now - gLastOutputTime) < 0.45) {
+        // Prefer mixed output bus 0 over mic-only bus 1
+        pthread_mutex_unlock(&gStreamLock);
+        return;
     }
-    BOOL allowThisStream=NO;
+    BOOL allow=NO;
     if (gActiveUnit==NULL || (now - gLastRenderTimestamp) > 0.45) { gActiveUnit=inUnit; gActiveBus=inBusNumber; }
-    else if (hasSignal && (gActiveUnit!=inUnit || gActiveBus!=inBusNumber) && (now - gLastNonSilentTimestamp) > 0.25) { gActiveUnit=inUnit; gActiveBus=inBusNumber; }
+    else if (gActiveUnit!=inUnit || gActiveBus!=inBusNumber) {
+        if ((now - gLastNonSilentTimestamp) > 0.28) { gActiveUnit=inUnit; gActiveBus=inBusNumber; }
+    }
     if (gActiveUnit==inUnit && gActiveBus==inBusNumber) {
-        gLastRenderTimestamp=now; if (hasSignal) gLastNonSilentTimestamp=now;
+        gLastRenderTimestamp=now; gLastNonSilentTimestamp=now;
         if (inBusNumber==0) gLastOutputTime=now;
         gLastAnyCaptureTime=now;
-        allowThisStream=YES;
+        allow=YES;
+    }
+    // Prepare ASBD – try cache first, avoid GetProperty on render thread if possible
+    AudioStreamBasicDescription asbdToUse; BOOL haveASBD=NO;
+    if (gCachedValid && gCachedUnit==inUnit) {
+        asbdToUse=gCachedASBD; haveASBD=YES;
     }
     pthread_mutex_unlock(&gStreamLock);
-    if (allowThisStream) [engine appendAudioBufferList:ioData frames:inNumberFrames format:asbd];
+    if (!allow) return;
+
+    AudioStreamBasicDescription asbd; BOOL gotFormat=NO;
+    if (haveASBD) { asbd=asbdToUse; gotFormat=YES; }
+    else {
+        UInt32 propSize=sizeof(asbd); memset(&asbd,0,sizeof(asbd));
+        if (AudioUnitGetProperty(inUnit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,inBusNumber,&asbd,&propSize)==noErr && asbd.mFormatID==kAudioFormatLinearPCM) gotFormat=YES;
+        else {
+            propSize=sizeof(asbd); memset(&asbd,0,sizeof(asbd));
+            if (AudioUnitGetProperty(inUnit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Input,inBusNumber,&asbd,&propSize)==noErr && asbd.mFormatID==kAudioFormatLinearPCM) gotFormat=YES;
+        }
+        if (gotFormat) {
+            pthread_mutex_lock(&gStreamLock);
+            gCachedUnit=inUnit; gCachedASBD=asbd; gCachedValid=YES;
+            pthread_mutex_unlock(&gStreamLock);
+        }
+    }
+    if (!gotFormat) return;
+    [[AudioRecorderEngine sharedInstance] appendAudioBufferList:ioData frames:inNumberFrames format:asbd];
 }
 
 static OSStatus CRPAudioUnitRenderNotify(void *inRefCon, AudioUnitRenderActionFlags *ioActionFlags, const AudioTimeStamp *inTimeStamp, UInt32 inBusNumber, UInt32 inNumberFrames, AudioBufferList *ioData) {
@@ -386,7 +407,14 @@ static OSStatus (*orig_AudioUnitInitialize)(AudioUnit inUnit)=NULL;
 static OSStatus hooked_AudioUnitInitialize(AudioUnit inUnit) {
     if (!orig_AudioUnitInitialize) return -1;
     OSStatus status=orig_AudioUnitInitialize(inUnit);
-    if (status==noErr && inUnit) AudioUnitAddRenderNotify(inUnit, CRPAudioUnitRenderNotify, (void*)inUnit);
+    if (status==noErr && inUnit) {
+        AudioUnitAddRenderNotify(inUnit, CRPAudioUnitRenderNotify, (void*)inUnit);
+        // Pre-cache format to avoid render-thread queries
+        AudioStreamBasicDescription asbd; memset(&asbd,0,sizeof(asbd)); UInt32 sz=sizeof(asbd);
+        if (AudioUnitGetProperty(inUnit,kAudioUnitProperty_StreamFormat,kAudioUnitScope_Output,0,&asbd,&sz)==noErr && asbd.mFormatID==kAudioFormatLinearPCM) {
+            pthread_mutex_lock(&gStreamLock); gCachedUnit=inUnit; gCachedASBD=asbd; gCachedValid=YES; pthread_mutex_unlock(&gStreamLock);
+        }
+    }
     return status;
 }
 
@@ -417,9 +445,8 @@ static OSStatus hooked_AudioConverterFillComplexBuffer(AudioConverterRef inAudio
     OSStatus status=orig_AudioConverterFillComplexBuffer(inAudioConverter, inInputDataProc, inInputDataProcUserData, ioOutputDataPacketSize, outOutputData, outPacketDescription);
     if (status==noErr && [AudioRecorderEngine sharedInstance].isRecording && outOutputData && ioOutputDataPacketSize && *ioOutputDataPacketSize>0) {
         CFAbsoluteTime now=CFAbsoluteTimeGetCurrent();
-        // Deduplicate: if Render captured within 15ms, skip Converter duplicate
         pthread_mutex_lock(&gStreamLock);
-        BOOL shouldSkip = (gLastAnyCaptureTime != 0.0 && (now - gLastAnyCaptureTime) < 0.015);
+        BOOL shouldSkip = (gLastAnyCaptureTime != 0.0 && (now - gLastAnyCaptureTime) < 0.012);
         pthread_mutex_unlock(&gStreamLock);
         if (shouldSkip) return status;
         AudioStreamBasicDescription asbd; memset(&asbd,0,sizeof(asbd)); UInt32 sz=sizeof(asbd);
@@ -428,7 +455,7 @@ static OSStatus hooked_AudioConverterFillComplexBuffer(AudioConverterRef inAudio
             UInt32 frames=*ioOutputDataPacketSize;
             if (asbd.mFramesPerPacket>0) frames = (*ioOutputDataPacketSize) * asbd.mFramesPerPacket;
             BOOL hasSignal=NO;
-            for (UInt32 b=0;b<outOutputData->mNumberBuffers;b++) { if (outOutputData->mBuffers[b].mData && outOutputData->mBuffers[b].mDataByteSize>=4) { const uint32_t *w=(const uint32_t*)outOutputData->mBuffers[b].mData; UInt32 cnt=MIN((UInt32)(outOutputData->mBuffers[b].mDataByteSize/4),32u); for (UInt32 i=0;i<cnt;i+=4) if (w[i]!=0) { hasSignal=YES; break; } if (hasSignal) break; } }
+            for (UInt32 b=0;b<outOutputData->mNumberBuffers;b++) { if (outOutputData->mBuffers[b].mData && outOutputData->mBuffers[b].mDataByteSize>=4) { const uint32_t *w=(const uint32_t*)outOutputData->mBuffers[b].mData; UInt32 cnt=MIN((UInt32)(outOutputData->mBuffers[b].mDataByteSize/4),16u); for (UInt32 i=0;i<cnt;i+=4) if (w[i]!=0) { hasSignal=YES; break; } if (hasSignal) break; } }
             if (hasSignal) {
                 pthread_mutex_lock(&gStreamLock); gLastAnyCaptureTime=now; gLastOutputTime=now; pthread_mutex_unlock(&gStreamLock);
                 [[AudioRecorderEngine sharedInstance] appendAudioBufferList:outOutputData frames:frames format:asbd];
@@ -446,8 +473,6 @@ static void CRPStopNotificationCallback(CFNotificationCenterRef center, void *ob
 }
 static void CRPPingNotificationCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
-        NSString *dir=[AudioRecorderEngine resolveWritableRecordingsDirectory] ?: @"NONE";
-        [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"PONG alive (writableDir=%@)", dir]];
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CRP_DARWIN_PONG_NOTIFICATION, NULL, NULL, true);
     });
 }
@@ -455,7 +480,7 @@ static void CRPPingNotificationCallback(CFNotificationCenterRef center, void *ob
 %end
 
 // ============================================================================
-// Constructor – minimal work on main thread to avoid dial freeze
+// Constructor – absolute minimal, defer all I/O
 // ============================================================================
 %ctor {
     @autoreleasepool {
@@ -464,12 +489,13 @@ static void CRPPingNotificationCallback(CFNotificationCenterRef center, void *ob
         if ([processName isEqualToString:@"InCallService"]) {
             %init(InCallServiceUI);
             CFNotificationCenterAddObserver(darwinCenter,NULL,CRPInCallCapturingDarwinCallback,CRP_DARWIN_CAPTURING_NOTIFICATION,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
+            // TUCall observers – dispatch to main queue lazily
             NSNotificationCenter *nc=[NSNotificationCenter defaultCenter];
             [nc addObserverForName:@"TUCallCenterCallStatusChangedNotification" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note){ CRPHandleCallStatusChanged(note); }];
             [nc addObserverForName:@"TUCallStatusChangedNotification" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note){ CRPHandleCallStatusChanged(note); }];
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
-                NSString *dir=[AudioRecorderEngine resolveWritableRecordingsDirectory] ?: @"NONE";
-                [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Loaded InCallServiceUI v1.3.3 (writableDir=%@)", dir]];
+            // Defer log – no file I/O at load time (fixes dial freeze)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2*NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
+                [AudioRecorderEngine appendDiagnosticLog:@"InCallServiceUI v1.3.4 loaded (deferred)"];
             });
         } else if ([processName isEqualToString:@"mediaserverd"] || [processName isEqualToString:@"audiomxd"] || [processName isEqualToString:@"callservicesd"] || [processName isEqualToString:@"avconferenced"] || [processName isEqualToString:@"coreaudiod"]) {
             %init(AudioDaemonHooks);
@@ -482,9 +508,8 @@ static void CRPPingNotificationCallback(CFNotificationCenterRef center, void *ob
             if (procSym) MSHookFunction(procSym,(void*)hooked_AudioUnitProcess,(void**)&orig_AudioUnitProcess);
             void *convSym=MSFindSymbol(NULL,"_AudioConverterFillComplexBuffer");
             if (convSym) MSHookFunction(convSym,(void*)hooked_AudioConverterFillComplexBuffer,(void**)&orig_AudioConverterFillComplexBuffer);
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
-                NSString *dir=[AudioRecorderEngine resolveWritableRecordingsDirectory] ?: @"NONE";
-                [AudioRecorderEngine appendDiagnosticLog:[NSString stringWithFormat:@"Loaded AudioDaemonHooks v1.3.3 (writableDir=%@, AUProcess=%@, AudioConverter=%@)", dir, procSym?@"hooked":@"n/a", convSym?@"hooked":@"n/a"]];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0*NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
+                [AudioRecorderEngine appendDiagnosticLog:@"AudioDaemonHooks v1.3.4 loaded (deferred, cache)"];
             });
         }
     }
